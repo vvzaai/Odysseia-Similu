@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 # 延迟导入以避免循环依赖
 # from similubot.utils.netease_search import search_song_id, search_and_get_lyrics
+from similubot.utils.netease_headers import build_netease_api_headers
 from similubot.utils.netease_proxy import get_proxy_manager
 from similubot.utils.config_manager import ConfigManager
 
@@ -35,11 +36,7 @@ class NetEaseCloudMusicClient:
         self.lyrics_api = "https://api.paugram.com/netease/"
 
         # 网易API请求头
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "http://music.163.com",
-            "Host": "music.163.com"
-        }
+        self.headers = build_netease_api_headers()
 
         # 会话超时
         self.timeout = aiohttp.ClientTimeout(total=10)

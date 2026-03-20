@@ -376,6 +376,7 @@ class TestNetEaseIntegration(unittest.TestCase):
         # 验证代理管理器被正确初始化
         mock_get_proxy_manager.assert_called_once_with(self.mock_config)
         self.assertEqual(client.proxy_manager, mock_proxy_manager)
+        self.assertEqual(client.headers["Accept-Encoding"], "identity")
 
 
 class TestConfigurationEdgeCases(unittest.TestCase):

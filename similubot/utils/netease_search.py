@@ -16,6 +16,7 @@ from typing import Optional, List, Dict, Any
 from urllib.parse import quote
 
 from similubot.core.interfaces import NetEaseSearchResult
+from similubot.utils.netease_headers import build_netease_api_headers
 from similubot.utils.netease_proxy import get_proxy_manager
 from similubot.utils.netease_member import get_member_auth
 from similubot.utils.config_manager import ConfigManager
@@ -44,11 +45,7 @@ class NetEaseSearchClient:
         self.song_detail_api = "https://api.paugram.com/netease/"
 
         # 网易API请求头
-        self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "http://music.163.com",
-            "Host": "music.163.com"
-        }
+        self.headers = build_netease_api_headers()
 
         # 会话超时
         self.timeout = aiohttp.ClientTimeout(total=10)

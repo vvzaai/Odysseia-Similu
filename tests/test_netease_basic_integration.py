@@ -104,6 +104,7 @@ class TestBasicNetEaseIntegration:
         assert client.song_detail_api == "https://api.paugram.com/netease/"
         assert client.timeout.total == 10
         assert client.proxy_manager is not None
+        assert client.headers["Accept-Encoding"] == "identity"
 
     def test_netease_search_client_url_generation(self):
         """测试NetEase搜索客户端URL生成"""
