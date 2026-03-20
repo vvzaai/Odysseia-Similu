@@ -26,6 +26,7 @@ from urllib.parse import urlencode
 from dataclasses import dataclass, asdict
 
 from similubot.utils.config_manager import ConfigManager
+from similubot.utils.netease_headers import build_netease_api_headers
 from similubot.utils.netease_crypto import weapi_encrypt, eapi_encrypt, eapi_decrypt
 
 
@@ -158,17 +159,16 @@ class NetEaseMemberAuth:
             请求头字典
         """
         if api_type == "eapi":
-            return {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 Chrome/91.0.4472.164 NeteaseMusicDesktop/2.10.2.200154",
-                "Referer": "",
-                "Content-Type": "application/x-www-form-urlencoded"
-            }
-        else:
-            return {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://music.163.com",
-                "Content-Type": "application/x-www-form-urlencoded"
-            }
+            return build_netease_api_headers(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36 Chrome/91.0.4472.164 NeteaseMusicDesktop/2.10.2.200154",
+                referer="",
+                extra_headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+
+        return build_netease_api_headers(
+            referer="https://music.163.com",
+            extra_headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
     
     def mask_sensitive_data(self, data: str) -> str:
         """

@@ -233,7 +233,9 @@ class TestNetEaseMemberAuth(unittest.TestCase):
         self.assertIn("User-Agent", headers)
         self.assertIn("Referer", headers)
         self.assertIn("Content-Type", headers)
+        self.assertIn("Accept-Encoding", headers)
         self.assertEqual(headers["Referer"], "https://music.163.com")
+        self.assertEqual(headers["Accept-Encoding"], "identity")
 
     def test_get_member_headers_eapi(self):
         """测试获取会员API请求头 - EAPI"""
@@ -242,7 +244,9 @@ class TestNetEaseMemberAuth(unittest.TestCase):
         self.assertIn("User-Agent", headers)
         self.assertIn("Referer", headers)
         self.assertIn("Content-Type", headers)
+        self.assertIn("Accept-Encoding", headers)
         self.assertEqual(headers["Referer"], "")
+        self.assertEqual(headers["Accept-Encoding"], "identity")
 
     def test_check_member_status_success(self):
         """测试检查会员状态 - 成功情况"""
