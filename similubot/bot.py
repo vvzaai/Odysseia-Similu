@@ -18,6 +18,20 @@ from similubot.adapters.music_player_adapter import MusicPlayerAdapter
 from similubot.utils.config_manager import ConfigManager
 
 
+def build_gateway_intents() -> discord.Intents:
+    """Return the non-privileged gateway intents required by the bot."""
+    intents = discord.Intents.none()
+    intents.guilds = True
+    intents.voice_states = True
+    intents.reactions = True
+    return intents
+
+
+def disabled_text_command_prefix(_bot: commands.Bot, _message: discord.Message) -> tuple:
+    """Disable the legacy prefix-command surface for the commands.Bot base class."""
+    return ()
+
+
 class SimiluBot:
     """
     Odysseia-Similu 音乐机器人主实现类。
@@ -43,13 +57,10 @@ class SimiluBot:
         # Initialize dependency injection container
         self.container = DependencyContainer()
 
-        # Set up Discord bot
-        intents = discord.Intents.default()
-        intents.message_content = True
-
+        # Set up Discord bot with only non-privileged gateway data.
         self.bot = commands.Bot(
-            command_prefix=self.config.get('discord.command_prefix', '!'),
-            intents=intents,
+            command_prefix=disabled_text_command_prefix,
+            intents=build_gateway_intents(),
             help_command=None  # We'll use our custom slash commands
         )
 

@@ -67,6 +67,7 @@ class SkipVotePoll:
         
         # 投票状态
         self.voters: Set[int] = set()  # 已投票用户ID集合
+        self.voice_channel_member_ids = {member.id for member in voice_channel_members}
         self.vote_message: Optional[discord.Message] = None
         self.result: Optional[VoteResult] = None
         self.is_active = False
@@ -218,28 +219,31 @@ class SkipVotePoll:
         Returns:
             投票结果
         """
-        def check_reaction(reaction: discord.Reaction, user: discord.User) -> bool:
+        def check_reaction(payload: discord.RawReactionActionEvent) -> bool:
             """检查反应是否有效"""
             return (
-                reaction.message.id == self.vote_message.id and
-                str(reaction.emoji) == "✅" and
-                not user.bot and
-                user.id in [member.id for member in self.voice_channel_members]
+                self.vote_message is not None and
+                payload.message_id == self.vote_message.id and
+                str(payload.emoji) == "✅" and
+                payload.user_id != self.ctx.bot.user.id and
+                payload.user_id in self.voice_channel_member_ids
             )
         
         while self.is_active:
             try:
                 # 等待有效的投票反应
-                reaction, user = await self.ctx.bot.wait_for(
-                    'reaction_add',
+                payload = await self.ctx.bot.wait_for(
+                    'raw_reaction_add',
                     check=check_reaction,
                     timeout=1.0  # 短超时，用于定期检查状态
                 )
                 
                 # 记录投票
-                if user.id not in self.voters:
-                    self.voters.add(user.id)
-                    self.logger.debug(f"用户 {user.display_name} 投票跳过，当前票数: {len(self.voters)}/{self.required_votes}")
+                if payload.user_id not in self.voters:
+                    self.voters.add(payload.user_id)
+                    voter = self._get_voice_member(payload.user_id)
+                    voter_name = getattr(voter, 'display_name', payload.user_id)
+                    self.logger.debug(f"用户 {voter_name} 投票跳过，当前票数: {len(self.voters)}/{self.required_votes}")
                     
                     # 更新投票消息
                     await self._update_poll_message()
@@ -257,6 +261,13 @@ class SkipVotePoll:
                 continue
         
         return VoteResult.FAILED
+
+    def _get_voice_member(self, user_id: int) -> Optional[discord.Member]:
+        """Return the voice-channel member with the given user ID."""
+        for member in self.voice_channel_members:
+            if member.id == user_id:
+                return member
+        return None
     
     async def _handle_timeout(self) -> VoteResult:
         """

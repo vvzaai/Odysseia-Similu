@@ -3,7 +3,7 @@
 # Discord 机器人配置
 discord:
   token: "YOUR_DISCORD_BOT_TOKEN_HERE"  # 在此处填入您的 Discord 机器人令牌
-  command_prefix: "!"  # 命令前缀，用户需要在命令前输入此符号
+  # 本项目只使用 Discord Slash Commands，不需要配置前缀命令。
 
 # 机器人管理配置
 bot:

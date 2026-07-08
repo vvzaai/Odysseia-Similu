@@ -94,7 +94,8 @@ def _log_bot_configuration(logger: logging.Logger, config: ConfigManager, bot: S
         bot: SimiluBot 实例
     """
     logger.info("📋 机器人配置摘要:")
-    logger.info(f"   命令前缀: {config.get('discord.command_prefix', '!')}")
+    logger.info("   命令入口: Discord Slash Commands (/)")
+    logger.info("   Privileged Gateway Intents: 未请求")
     logger.info(f"   音乐功能: {'✅ 已启用' if config.get('music.enabled', True) else '❌ 已禁用'}")
     logger.info(f"   最大队列长度: {config.get('music.max_queue_size', 100)}")
     logger.info(f"   最大歌曲时长: {config.get('music.max_song_duration', 3600)} 秒")

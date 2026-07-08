@@ -4,6 +4,18 @@
 
 本文档描述了Odysseia-Similu音乐机器人从前缀命令(!music)迁移到Discord原生Slash Commands(/commands)的新架构设计。
 
+## Gateway Intent 契约
+
+当前运行架构只使用 Discord Slash Commands，不读取普通消息内容，不注册前缀命令，也不缓存全服成员或在线状态。
+
+机器人只请求以下非 Privileged Gateway Intents：
+
+- `guilds`: 接收服务器基础信息并注册 Slash Commands
+- `voice_states`: 连接语音频道、读取当前语音频道成员、判断点歌人是否仍在语音频道
+- `reactions`: 支持歌曲跳过投票的 raw reaction 事件
+
+不得为命令解析重新启用 `message_content`。如果后续需要新增交互入口，优先使用 Slash Commands、按钮、选择菜单或 Modal。
+
 ## 设计原则
 
 ### 1. 领域驱动设计 (Domain-Driven Design)

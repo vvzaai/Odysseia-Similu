@@ -4,6 +4,8 @@
 
 本文档详细说明了Odysseia-Similu音乐机器人从传统前缀命令(!music)迁移到Discord原生Slash Commands(/commands)的完整过程。这是一个**破坏性变更**，将完全替换现有的命令系统。
 
+当前代码已经完成迁移：机器人不再注册前缀命令，不再通过 `on_message` 调用 `process_commands`，也不再请求 `message_content` Privileged Gateway Intent。
+
 ## 迁移概要
 
 ### 架构变更
