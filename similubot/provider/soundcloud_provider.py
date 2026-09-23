@@ -5,6 +5,11 @@ SoundCloud 音频提供者 - 处理 SoundCloud 曲目的信息提取与下载
 遵循项目的模块化设计原则，保持与其他音频提供者一致的接口与日志风格。
 """
 
+# soundcloud-lib 为可选依赖：注解延迟求值（字符串化），
+# 避免库未安装时类定义阶段对 Track/Playlist 注解求值抛 NameError，
+# 使 __init__ 中的 ImportError 防护能按设计生效
+from __future__ import annotations
+
 import asyncio
 import os
 import re
