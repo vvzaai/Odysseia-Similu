@@ -161,7 +161,7 @@ class SongHistoryDatabase:
                 conn.close()
         
         # 在线程池中执行数据库操作
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, create_tables)
     
     async def add_song_record(
@@ -251,7 +251,7 @@ class SongHistoryDatabase:
                     finally:
                         conn.close()
 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 record_id, was_update = await loop.run_in_executor(None, upsert_record)
 
                 if was_update:
@@ -316,7 +316,7 @@ class SongHistoryDatabase:
                     finally:
                         conn.close()
 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 songs = await loop.run_in_executor(None, query_random_songs)
 
                 self.logger.debug(f"获取随机歌曲 - 服务器: {guild_id}, 用户: {user_id}, 数量: {len(songs)}")
@@ -351,7 +351,7 @@ class SongHistoryDatabase:
                     finally:
                         conn.close()
 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 count = await loop.run_in_executor(None, count_user_songs)
                 return count
 
@@ -383,7 +383,7 @@ class SongHistoryDatabase:
                     finally:
                         conn.close()
 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 count = await loop.run_in_executor(None, count_total_songs)
                 return count
 
@@ -452,7 +452,7 @@ class SongHistoryDatabase:
                     finally:
                         conn.close()
 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 success = await loop.run_in_executor(None, save_setting)
 
                 # 更新缓存
@@ -519,7 +519,7 @@ class SongHistoryDatabase:
                     finally:
                         conn.close()
 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 setting = await loop.run_in_executor(None, get_setting)
 
                 # 更新缓存
@@ -569,7 +569,7 @@ class SongHistoryDatabase:
                     finally:
                         conn.close()
 
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 success = await loop.run_in_executor(None, delete_setting)
 
                 # 清除缓存

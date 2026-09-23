@@ -706,8 +706,10 @@ class MusicProgressUpdater:
         except Exception as e:
             self.logger.error(f"Error in progress updates for guild {guild_id}: {e}", exc_info=True)
         finally:
-            # Clean up
-            if guild_id in self._active_progress_bars:
+            # Clean up（身份校验：show_progress_bar/stop_progress_updates 取消任务后不等待其结束，
+            # 旧任务收尾可能晚于新任务登记，仅当映射仍指向本任务时才可删除）
+            current_task = asyncio.current_task()
+            if self._active_progress_bars.get(guild_id) is current_task:
                 del self._active_progress_bars[guild_id]
             if guild_id in self._last_update_positions:
                 del self._last_update_positions[guild_id]

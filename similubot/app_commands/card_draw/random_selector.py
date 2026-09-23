@@ -41,15 +41,23 @@ class RandomSongSelector:
     负责从歌曲历史数据库中根据配置的来源和权重策略选择歌曲。
     支持多种选择策略和权重分配算法。
     """
+
+    # 候选池默认采样上限：数据库先 ORDER BY RANDOM() LIMIT N 均匀采样，再在应用层加权。
+    # 池超过 N 时未入样的歌曲没有机会被抽中——N 越大偏差越小，但内存开销越大。
+    # 可通过 card_draw.sample_size 配置调整
+    DEFAULT_SAMPLE_SIZE = 500
+    SAMPLE_SIZE_LIMIT = 10000
     
-    def __init__(self, database: SongHistoryDatabase):
+    def __init__(self, database: SongHistoryDatabase, config: Optional[Any] = None):
         """
         初始化随机选择器
         
         Args:
             database: 歌曲历史数据库实例
+            config: 配置管理器（可选，用于读取 card_draw.sample_size）
         """
         self.database = database
+        self.config = config
         self.logger = logging.getLogger("similubot.card_draw.selector")
         
         # 权重配置
@@ -60,6 +68,18 @@ class RandomSongSelector:
         }
         
         self.logger.debug("随机歌曲选择器初始化完成")
+
+    def _get_sample_size(self) -> int:
+        """获取候选池采样上限（card_draw.sample_size，默认 DEFAULT_SAMPLE_SIZE）"""
+        if self.config:
+            try:
+                size = self.config.get('card_draw.sample_size', self.DEFAULT_SAMPLE_SIZE)
+                if isinstance(size, int) and 1 <= size <= self.SAMPLE_SIZE_LIMIT:
+                    return size
+                self.logger.warning(f"card_draw.sample_size 配置无效: {size}，使用默认值 {self.DEFAULT_SAMPLE_SIZE}")
+            except Exception:
+                pass
+        return self.DEFAULT_SAMPLE_SIZE
     
     async def select_random_song(
         self, 
@@ -113,7 +133,7 @@ class RandomSongSelector:
         """
         if config.source == CardDrawSource.GLOBAL:
             # 全局池：所有用户的歌曲
-            return await self.database.get_random_songs(guild_id, user_id=None, limit=100)
+            return await self.database.get_random_songs(guild_id, user_id=None, limit=self._get_sample_size())
             
         elif config.source == CardDrawSource.PERSONAL:
             # 个人池：需要在调用时传入用户ID
@@ -129,7 +149,7 @@ class RandomSongSelector:
             candidates = await self.database.get_random_songs(
                 guild_id,
                 user_id=config.target_user_id,
-                limit=100
+                limit=self._get_sample_size()
             )
 
             if not candidates:
@@ -157,7 +177,7 @@ class RandomSongSelector:
             候选歌曲列表
         """
         if config.source == CardDrawSource.PERSONAL:
-            return await self.database.get_random_songs(guild_id, user_id=user_id, limit=100)
+            return await self.database.get_random_songs(guild_id, user_id=user_id, limit=self._get_sample_size())
         else:
             return await self._get_candidates(guild_id, config)
     

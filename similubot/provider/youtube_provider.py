@@ -111,7 +111,7 @@ class YouTubeProvider(BaseAudioProvider):
         """
         try:
             # 在线程池中执行，避免阻塞
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             yt = await loop.run_in_executor(None, self._create_youtube_object, url)
             
             # 获取视频信息
@@ -157,7 +157,7 @@ class YouTubeProvider(BaseAudioProvider):
                 ))
             
             # 创建YouTube对象
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             yt = await loop.run_in_executor(None, self._create_youtube_object, url)
             
             # 获取音频流：按码率(abr)降序选最高音质。

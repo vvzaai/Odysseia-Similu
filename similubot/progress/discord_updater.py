@@ -274,7 +274,7 @@ class DiscordProgressUpdater:
             except RuntimeError:
                 # No running event loop, try to schedule for later
                 try:
-                    loop = asyncio.get_event_loop()
+                    loop = asyncio.get_running_loop()
                     if loop.is_running():
                         # Loop is running in another thread, use call_soon_threadsafe
                         asyncio.run_coroutine_threadsafe(self.update_progress(progress), loop)

@@ -285,7 +285,7 @@ class CommandRegistry:
 
                 # 使用共享数据库实例（每次新建会导致锁不共享、连接随 CWD 漂移）
                 database = await self._get_song_history_database()
-                selector = RandomSongSelector(database)
+                selector = RandomSongSelector(database, config)
                 handler = CardDrawCommands(config, music_player, database, selector)
 
                 await handler.execute(interaction)
@@ -322,7 +322,7 @@ class CommandRegistry:
 
                 # 使用共享数据库实例（每次新建会导致锁不共享、连接随 CWD 漂移）
                 database = await self._get_song_history_database()
-                selector = RandomSongSelector(database)
+                selector = RandomSongSelector(database, config)
                 handler = SourceSettingsCommands(config, music_player, database, selector)
 
                 await handler.execute(interaction, source=来源.value, target_user=目标用户)

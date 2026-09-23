@@ -142,15 +142,20 @@ class PersistenceManager(IPersistenceManager):
                     self.logger.error(f"队列状态数据验证失败 - 服务器 {guild_id}")
                     return False
 
-                # 写入文件
+                # 写入文件（原子写：先写同目录临时文件再替换，
+                # 避免进程在 json.dump 中途退出导致目标文件截断损坏）
                 file_path = self._get_queue_file_path(guild_id)
-                
+                tmp_path = file_path + ".tmp"
+
                 def write_file():
-                    with open(file_path, 'w', encoding='utf-8') as f:
+                    with open(tmp_path, 'w', encoding='utf-8') as f:
                         json.dump(save_data, f, ensure_ascii=False, indent=2)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp_path, file_path)
 
                 # 在线程池中执行文件写入
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 await loop.run_in_executor(None, write_file)
 
                 self.logger.debug(f"队列状态保存成功 - 服务器 {guild_id}, 队列长度: {len(queue)}")
@@ -181,7 +186,7 @@ class PersistenceManager(IPersistenceManager):
                 with open(file_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             data = await loop.run_in_executor(None, read_file)
 
             # 验证数据完整性

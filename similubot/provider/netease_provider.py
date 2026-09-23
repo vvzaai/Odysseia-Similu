@@ -418,10 +418,20 @@ class NetEaseProvider(BaseAudioProvider):
 
                     self.logger.debug(f"开始下载音频文件，大小: {total_size} 字节")
 
+                    # 缓冲批量写盘：8KB 小 chunk 同步写会频繁阻塞事件循环，
+                    # 累积到 256KB 后交由线程池写入
+                    loop = asyncio.get_running_loop()
+                    buffer = bytearray()
+
                     with open(file_path, 'wb') as f:
                         async for chunk in response.content.iter_chunked(8192):
-                            f.write(chunk)
+                            buffer.extend(chunk)
                             downloaded += len(chunk)
+
+                            if len(buffer) >= 256 * 1024:
+                                data = bytes(buffer)
+                                buffer.clear()
+                                await loop.run_in_executor(None, f.write, data)
 
                             # 更新进度
                             if progress_tracker and total_size > 0:
@@ -434,6 +444,10 @@ class NetEaseProvider(BaseAudioProvider):
                                     total_size=total_size,
                                     message=f"下载中... {downloaded}/{total_size} 字节"
                                 ))
+
+                        # 写入尾部残余缓冲
+                        if buffer:
+                            await loop.run_in_executor(None, f.write, bytes(buffer))
 
             # 验证下载的文件
             if os.path.exists(file_path):

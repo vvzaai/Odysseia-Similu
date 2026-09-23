@@ -9,7 +9,7 @@ import logging
 import re
 from typing import Dict, Set, Optional, Tuple, List, Any
 from dataclasses import dataclass
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urlunsplit
 import discord
 
 from similubot.core.interfaces import AudioInfo
@@ -169,11 +169,15 @@ class DuplicateDetector:
             return ""
         
         try:
-            parsed = urlparse(url.lower())
+            # 仅对 scheme/域名做大小写归一（hostname 属性自动小写）；
+            # 路径与查询参数保留原始大小写——YouTube 视频 ID 和 Catbox 文件名均大小写敏感，
+            # 整体转小写会导致不同视频被误判为同一首
+            parsed = urlparse(url.strip())
+            host = (parsed.hostname or '').lower()
             
             # YouTube URL处理
-            if 'youtube.com' in parsed.netloc or 'youtu.be' in parsed.netloc:
-                if 'youtu.be' in parsed.netloc:
+            if 'youtube.com' in host or 'youtu.be' in host:
+                if 'youtu.be' in host:
                     # youtu.be/VIDEO_ID 格式
                     return parsed.path.lstrip('/')
                 else:
@@ -183,17 +187,23 @@ class DuplicateDetector:
                     return video_id
             
             # Catbox URL处理
-            elif 'catbox.moe' in parsed.netloc:
+            elif 'catbox.moe' in host:
                 # 提取文件名
                 return parsed.path.split('/')[-1]
             
-            # 其他URL，返回完整的标准化URL
+            # 其他URL，返回标准化URL（仅 scheme/host 小写）
             else:
-                return url.lower().strip()
+                return urlunsplit((
+                    parsed.scheme.lower(),
+                    parsed.netloc.lower(),
+                    parsed.path,
+                    parsed.query,
+                    parsed.fragment
+                ))
                 
         except Exception as e:
             self.logger.warning(f"URL解析失败 {url}: {e}")
-            return url.lower().strip()
+            return url.strip()
     
     def _create_song_identifier(self, audio_info: AudioInfo) -> SongIdentifier:
         """

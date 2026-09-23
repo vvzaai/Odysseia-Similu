@@ -348,7 +348,7 @@ class BilibiliProvider(BaseAudioProvider):
             video = self._create_bilibili_video_object(video_id)
 
             # 在线程池中执行，避免阻塞
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             video_info = await loop.run_in_executor(None, lambda: asyncio.run(video.get_info()))
 
             # 获取页面信息以获取正确的时长
@@ -422,7 +422,7 @@ class BilibiliProvider(BaseAudioProvider):
             video = self._create_bilibili_video_object(video_id)
 
             # 获取视频信息
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             video_info = await loop.run_in_executor(None, lambda: asyncio.run(video.get_info()))
 
             # 获取页面信息以验证页面索引
@@ -555,10 +555,20 @@ class BilibiliProvider(BaseAudioProvider):
                     total_size = int(response.headers.get('content-length', 0))
                     downloaded = 0
 
+                    # 缓冲批量写盘：8KB 小 chunk 同步写会频繁阻塞事件循环，
+                    # 累积到 256KB 后交由线程池写入
+                    loop = asyncio.get_running_loop()
+                    buffer = bytearray()
+
                     with open(file_path, 'wb') as f:
                         async for chunk in response.content.iter_chunked(8192):
-                            f.write(chunk)
+                            buffer.extend(chunk)
                             downloaded += len(chunk)
+
+                            if len(buffer) >= 256 * 1024:
+                                data = bytes(buffer)
+                                buffer.clear()
+                                await loop.run_in_executor(None, f.write, data)
 
                             # 更新进度
                             if progress_tracker and total_size > 0:
@@ -569,6 +579,10 @@ class BilibiliProvider(BaseAudioProvider):
                                     percentage=progress_percent,
                                     message=f"下载中... {downloaded}/{total_size} 字节"
                                 ))
+
+                        # 写入尾部残余缓冲
+                        if buffer:
+                            await loop.run_in_executor(None, f.write, bytes(buffer))
 
             self.logger.debug(f"音频流下载完成: {file_path}")
             return True
