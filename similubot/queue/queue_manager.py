@@ -385,6 +385,40 @@ class QueueManager(IQueueManager):
 
             return song
     
+    async def skip_current_song(self) -> Optional[SongInfo]:
+        """
+        跳过当前歌曲并获取下一首（IQueueManager 接口实现）
+
+        与先 clear 再调 get_next_song 的组合不同，本方法在单次持锁内完成
+        "清当前+取下一首"，避免嵌套求锁死锁。生产跳歌路径走 PlaybackEngine.skip_song。
+
+        Returns:
+            下一首歌曲，如果队列为空则返回None
+        """
+        async with self._lock:
+            if self._current_song:
+                self.logger.info(f"跳过当前歌曲: {self._current_song.title}")
+                self._current_song = None
+                self._current_position = 0.0
+
+            if not self._queue:
+                await self._save_state()
+                return None
+
+            song = self._queue.pop(0)
+            self._current_song = song
+            self._current_position = 0.0  # 重置播放位置
+
+            # 通知重复检测器歌曲开始播放（与 get_next_song 行为一致）
+            self._duplicate_detector.notify_song_started_playing(song.audio_info, song.requester)
+
+            self.logger.info(f"获取下一首歌曲: {song.title}")
+
+            # 保存状态
+            await self._save_state()
+
+            return song
+    
     async def jump_to_position(self, position: int) -> Optional[SongInfo]:
         """
         跳转到队列中的指定位置

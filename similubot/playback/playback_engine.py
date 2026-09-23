@@ -405,6 +405,39 @@ class PlaybackEngine(IPlaybackEngine):
             self._cancel_disconnect_task(user.guild.id)
         return success, error
     
+    def get_queue_info(self, guild_id: int) -> Dict[str, Any]:
+        """
+        获取队列信息（IPlaybackEngine 同步接口实现）。
+
+        queue_manager.get_queue_info() 为持锁异步方法，此处用同步原语读取快照。
+        同步方法执行期间不会让出事件循环控制权，无锁遍历是安全的。
+        调用方请优先使用 MusicPlayerAdapter 的异步 get_queue_info。
+        """
+        try:
+            queue_manager = self.get_queue_manager(guild_id)
+            current_song = queue_manager.get_current_song()
+            queue_songs = list(queue_manager._queue)
+            return {
+                'guild_id': guild_id,
+                'current_song': current_song.get_display_info() if current_song else None,
+                'current_position': queue_manager._current_position,
+                'queue_length': len(queue_songs),
+                'queue_songs': [song.get_display_info() for song in queue_songs[:10]],
+                'total_duration': sum(song.duration for song in queue_songs),
+                'has_more_songs': len(queue_songs) > 10
+            }
+        except Exception as e:
+            self.logger.error(f"获取队列信息失败 - 服务器 {guild_id}: {e}")
+            return {
+                'guild_id': guild_id,
+                'current_song': None,
+                'current_position': 0.0,
+                'queue_length': 0,
+                'queue_songs': [],
+                'total_duration': 0,
+                'has_more_songs': False
+            }
+
     def is_playing(self, guild_id: int) -> bool:
         """
         检查是否正在播放
