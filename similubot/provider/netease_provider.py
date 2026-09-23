@@ -92,13 +92,22 @@ class NetEaseProvider(BaseAudioProvider):
             if pattern.search(url):
                 return True
         
-        # 启用反向代理时，代理域名的 URL 也视为支持。
-        # 反代会重写网易云 URL 为代理域名（如 http://localhost:8080/...），
-        # 从配置读取而非硬编码特定代理地址
+        # 启用反向代理时，代理目标 URL 也视为支持。
+        # 反代会重写网易云 URL 为代理地址（如 http://localhost:8080/netease_api/song?id=123），
+        # 从配置收集代理目标（proxy_domain 与 domain_mapping 的映射值，可能带路径前缀），
+        # 匹配 host 部分即可，ID 提取由 extract_song_id 的查询参数兑底覆盖
         if self.config and self.config.get('netease_proxy.enabled', False):
+            proxy_targets = []
             proxy_domain = (self.config.get('netease_proxy.proxy_domain', '') or '').strip()
-            if proxy_domain and proxy_domain in url:
-                return True
+            if proxy_domain:
+                proxy_targets.append(proxy_domain)
+            mapping = self.config.get('netease_proxy.domain_mapping', {})
+            if isinstance(mapping, dict):
+                proxy_targets.extend(t.strip() for t in mapping.values() if t and t.strip())
+            for target in proxy_targets:
+                host = target.split('/')[0]
+                if host and host in url:
+                    return True
         
         return False
     
