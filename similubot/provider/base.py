@@ -5,6 +5,8 @@
 """
 
 import logging
+import os
+import time
 from abc import ABC
 from typing import Optional, Tuple
 from similubot.core.interfaces import IAudioProvider, AudioInfo
@@ -18,6 +20,9 @@ class BaseAudioProvider(IAudioProvider, ABC):
     提供音频提供者的通用功能，包括日志记录和错误处理。
     子类需要实现具体的音频源处理逻辑。
     """
+
+    # 子类声明临时文件名前缀以启用过期清理；None 表示不下载到本地（如 Catbox 流式播放）
+    TEMP_FILE_PREFIX: Optional[str] = None
     
     def __init__(self, name: str, temp_dir: str = "./temp"):
         """
@@ -32,6 +37,54 @@ class BaseAudioProvider(IAudioProvider, ABC):
         self.logger = logging.getLogger(f"similubot.provider.{name.lower()}")
         
         self.logger.debug(f"{name} 音频提供者初始化完成")
+
+    def cleanup_temp_files(self, max_age_hours: int = 24) -> int:
+        """
+        清理本提供者过期的临时文件
+
+        子类通过 TEMP_FILE_PREFIX 类属性声明文件名前缀即可启用。
+        传入 max_age_hours=0 可清理全部遗留文件（用于启动时清理上次运行的残留）。
+
+        Args:
+            max_age_hours: 文件最大保留时间（小时）
+
+        Returns:
+            清理的文件数量
+        """
+        if not self.TEMP_FILE_PREFIX:
+            return 0
+
+        try:
+            current_time = time.time()
+            max_age_seconds = max_age_hours * 3600
+            cleaned_count = 0
+
+            for filename in os.listdir(self.temp_dir):
+                if not filename.startswith(self.TEMP_FILE_PREFIX):
+                    continue
+                file_path = os.path.join(self.temp_dir, filename)
+                try:
+                    if not os.path.isfile(file_path):
+                        continue
+                    file_age = current_time - os.path.getmtime(file_path)
+                    if file_age > max_age_seconds:
+                        os.remove(file_path)
+                        cleaned_count += 1
+                        self.logger.debug(f"清理过期文件: {filename}")
+                except Exception as e:
+                    self.logger.warning(f"清理文件失败 - {filename}: {e}")
+
+            if cleaned_count > 0:
+                self.logger.info(f"清理了 {cleaned_count} 个过期的{self.name}音频文件")
+
+            return cleaned_count
+
+        except FileNotFoundError:
+            # 临时目录不存在，无需清理
+            return 0
+        except Exception as e:
+            self.logger.error(f"清理临时文件时发生错误: {e}")
+            return 0
     
     def _log_extraction_start(self, url: str) -> None:
         """记录开始提取音频信息"""

@@ -152,10 +152,36 @@ class ConfigManager:
         """
         Get the list of administrator Discord IDs.
 
+        读取 config.yaml.example 声明的 bot.owner_id / bot.admin_id，
+        并合并遗留的 authorization.admin_ids 列表（向后兼容）。
+
         Returns:
             List of administrator Discord IDs
         """
-        return self.get('authorization.admin_ids', [])
+        admin_ids = []
+
+        for key in ('bot.owner_id', 'bot.admin_id'):
+            value = self.get(key)
+            if isinstance(value, int) and value not in admin_ids:
+                admin_ids.append(value)
+
+        legacy = self.get('authorization.admin_ids', [])
+        if isinstance(legacy, list):
+            for aid in legacy:
+                if isinstance(aid, int) and aid not in admin_ids:
+                    admin_ids.append(aid)
+
+        return admin_ids
+
+    def get_owner_id(self) -> Optional[int]:
+        """
+        Get the bot owner's Discord ID (bot.owner_id).
+
+        Returns:
+            Owner Discord ID, or None if not configured
+        """
+        owner_id = self.get('bot.owner_id')
+        return owner_id if isinstance(owner_id, int) else None
 
     def get_auth_config_path(self) -> str:
         """
@@ -518,6 +544,24 @@ class ConfigManager:
             Default volume (0.0-1.0)
         """
         return self.get('music.volume', 0.5)
+
+    def get_ffmpeg_before_options(self) -> str:
+        """
+        Get FFmpeg input (before) options, e.g. stream reconnect flags.
+
+        Returns:
+            FFmpeg before_options string
+        """
+        return self.get('music.ffmpeg_options.before', '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5')
+
+    def get_ffmpeg_options(self) -> str:
+        """
+        Get FFmpeg output options, e.g. '-vn' to drop video.
+
+        Returns:
+            FFmpeg options string
+        """
+        return self.get('music.ffmpeg_options.options', '-vn')
 
     # YouTube PoToken Configuration Methods
     def is_youtube_auto_fallback_enabled(self) -> bool:

@@ -385,22 +385,6 @@ class QueueManager(IQueueManager):
 
             return song
     
-    async def skip_current_song(self) -> Optional[SongInfo]:
-        """
-        跳过当前歌曲并获取下一首
-        
-        Returns:
-            下一首歌曲，如果队列为空则返回None
-        """
-        async with self._lock:
-            if self._current_song:
-                self.logger.info(f"跳过当前歌曲: {self._current_song.title}")
-                self._current_song = None
-                self._current_position = 0.0
-            
-            # get_next_song 会自动保存状态
-            return await self.get_next_song()
-    
     async def jump_to_position(self, position: int) -> Optional[SongInfo]:
         """
         跳转到队列中的指定位置

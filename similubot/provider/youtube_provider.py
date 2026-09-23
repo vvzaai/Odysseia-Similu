@@ -26,6 +26,9 @@ class YouTubeProvider(BaseAudioProvider):
     支持进度跟踪和配置管理。
     """
     
+    # 临时文件名前缀（用于过期文件自动清理）
+    TEMP_FILE_PREFIX = "youtube_"
+    
     # YouTube URL 正则表达式
     YOUTUBE_URL_PATTERNS = [
         r'(?:https?://)?(?:www\.)?youtube\.com/watch\?v=([a-zA-Z0-9_-]+)',
@@ -48,14 +51,21 @@ class YouTubeProvider(BaseAudioProvider):
         # 创建临时目录
         os.makedirs(temp_dir, exist_ok=True)
         
-        # 获取配置
-        self.po_token = config.get('youtube.po_token') if config else None
-        self.visitor_data = config.get('youtube.visitor_data') if config else None
-        
+        # 获取配置（通过 ConfigManager 的专用 getter，路径与 config.yaml.example 一致：
+        # music.youtube.potoken.*）。历史上此处直接读 'youtube.po_token' / 'youtube.visitor_data'，
+        # 与配置模板路径不一致，导致用户配置永远不生效。
+        self.po_token = None
+        self.visitor_data = None
+        if self.config and self.config.is_potoken_enabled():
+            self.po_token = self.config.get_manual_po_token() or None
+            self.visitor_data = self.config.get_manual_visitor_data() or None
+
         if self.po_token and self.visitor_data:
             self.logger.info("YouTube 配置已加载 (PoToken 和 VisitorData)")
+        elif self.config and self.config.is_potoken_enabled():
+            self.logger.warning("PoToken 已启用但 manual.po_token / manual.visitor_data 未完整配置，可能影响某些视频的访问")
         else:
-            self.logger.warning("YouTube 配置未完整加载，可能影响某些视频的访问")
+            self.logger.debug("PoToken 未启用，使用默认 YouTube 访问方式")
     
     def is_supported_url(self, url: str) -> bool:
         """
@@ -150,10 +160,14 @@ class YouTubeProvider(BaseAudioProvider):
             loop = asyncio.get_event_loop()
             yt = await loop.run_in_executor(None, self._create_youtube_object, url)
             
-            # 获取音频流
-            audio_stream = yt.streams.filter(only_audio=True, file_extension='mp4').first()
+            # 获取音频流：按码率(abr)降序选最高音质。
+            # 不限定 mp4——YouTube 最佳音质音频流通常是 WebM/Opus (itag 251, ~160kbps)，
+            # 限定 mp4 会只剩 AAC 128kbps 档
+            audio_stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
             if not audio_stream:
                 return False, None, "未找到可用的音频流"
+
+            file_ext = audio_stream.subtype or 'mp4'
             
             if progress_tracker:
                 await progress_tracker.update(ProgressInfo(
@@ -165,9 +179,9 @@ class YouTubeProvider(BaseAudioProvider):
             # 生成文件名
             video_id = self._extract_video_id(url)
             safe_title = re.sub(r'[^\w\s-]', '', yt.title or 'unknown')[:50]
-            filename = f"youtube_{video_id}_{safe_title}.mp4"
+            filename = f"youtube_{video_id}_{safe_title}.{file_ext}"
             file_path = os.path.join(self.temp_dir, filename)
-            
+
             # 下载文件
             def download_with_progress():
                 def on_progress(stream, chunk, bytes_remaining):
@@ -175,13 +189,17 @@ class YouTubeProvider(BaseAudioProvider):
                         total_size = stream.filesize
                         downloaded = total_size - bytes_remaining
                         progress = min(0.9, 0.1 + (downloaded / total_size) * 0.8)
-                        
-                        # 异步更新进度
-                        asyncio.create_task(progress_tracker.update(ProgressInfo(
-                            status=ProgressStatus.DOWNLOADING,
-                            message=f"下载中... {downloaded}/{total_size} 字节",
-                            progress=progress
-                        )))
+
+                        # 本回调在 executor 线程中执行，线程内没有运行中的事件循环，
+                        # 直接 asyncio.create_task 会抛 RuntimeError；
+                        # 须通过 call_soon_threadsafe 调度回事件循环线程
+                        def _schedule_update():
+                            asyncio.create_task(progress_tracker.update(ProgressInfo(
+                                status=ProgressStatus.DOWNLOADING,
+                                message=f"下载中... {downloaded}/{total_size} 字节",
+                                progress=progress
+                            )))
+                        loop.call_soon_threadsafe(_schedule_update)
                 
                 yt.register_on_progress_callback(on_progress)
                 return audio_stream.download(output_path=self.temp_dir, filename=filename)
@@ -204,7 +222,7 @@ class YouTubeProvider(BaseAudioProvider):
                 file_path=downloaded_path,
                 thumbnail_url=yt.thumbnail_url,
                 file_size=os.path.getsize(downloaded_path) if os.path.exists(downloaded_path) else None,
-                file_format="mp4"
+                file_format=file_ext
             )
             
             return True, audio_info, None
@@ -230,37 +248,5 @@ class YouTubeProvider(BaseAudioProvider):
             return False, None, error_msg
 
     def cleanup_temp_files(self, max_age_hours: int = 24) -> int:
-        """
-        清理临时文件
-
-        Args:
-            max_age_hours: 文件最大保留时间（小时）
-
-        Returns:
-            清理的文件数量
-        """
-        try:
-            current_time = time.time()
-            max_age_seconds = max_age_hours * 3600
-            cleaned_count = 0
-
-            for filename in os.listdir(self.temp_dir):
-                if filename.startswith("youtube_") and filename.endswith(".mp4"):
-                    file_path = os.path.join(self.temp_dir, filename)
-                    try:
-                        file_age = current_time - os.path.getmtime(file_path)
-                        if file_age > max_age_seconds:
-                            os.remove(file_path)
-                            cleaned_count += 1
-                            self.logger.debug(f"清理过期文件: {filename}")
-                    except Exception as e:
-                        self.logger.warning(f"清理文件失败 - {filename}: {e}")
-
-            if cleaned_count > 0:
-                self.logger.info(f"清理了 {cleaned_count} 个过期的YouTube音频文件")
-
-            return cleaned_count
-
-        except Exception as e:
-            self.logger.error(f"清理临时文件时发生错误: {e}")
-            return 0
+        """兼容旧调用的清理方法，实际逻辑在基类按 TEMP_FILE_PREFIX 实现。"""
+        return super().cleanup_temp_files(max_age_hours)

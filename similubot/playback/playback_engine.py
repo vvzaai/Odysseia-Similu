@@ -556,7 +556,9 @@ class PlaybackEngine(IPlaybackEngine):
         """播放音频文件"""
         try:
             # 创建音频源
-            audio_source = discord.FFmpegPCMAudio(file_path)
+            # 创建音频源（本地文件不需要重连参数，仅应用输出选项如 -vn）
+            ffmpeg_options = self.config.get_ffmpeg_options() if self.config else '-vn'
+            audio_source = discord.FFmpegPCMAudio(file_path, options=ffmpeg_options)
 
             # 播放完成事件
             playback_finished = asyncio.Event()
@@ -600,12 +602,21 @@ class PlaybackEngine(IPlaybackEngine):
             # 等待播放完成
             await playback_finished.wait()
 
-            # 清理音频文件
-            self._current_audio_files[guild_id] = file_path
-
         except Exception as e:
             self.logger.error(f"播放音频文件失败: {e}")
             self._cleanup_playback_tracking(guild_id)
+        finally:
+            # 播放结束（完成/跳过/停止/异常）后删除本地音频文件，
+            # 避免 temp 目录无限增长。finally 也覆盖 task 被取消的路径
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    self.logger.debug(f"播放结束，清理音频文件: {file_path}")
+            except Exception as e:
+                self.logger.warning(f"清理音频文件失败: {e}")
+            # 若映射中仍指向本次文件，一并清除，避免后续二次删除
+            if self._current_audio_files.get(guild_id) == file_path:
+                del self._current_audio_files[guild_id]
 
     async def _resolve_playable_url(self, url: str) -> Optional[str]:
         """
@@ -662,8 +673,21 @@ class PlaybackEngine(IPlaybackEngine):
 
             self.logger.debug(f"使用播放链接: {playable_url}")
 
+            # 创建音频源。URL 流式播放应用配置的重连参数（music.ffmpeg_options.before），
+            # 网络抖动时 ffmpeg 自动重连而非直接断流；本地文件路径不需要
+            if self.config:
+                before_options = self.config.get_ffmpeg_before_options()
+                ffmpeg_options = self.config.get_ffmpeg_options()
+            else:
+                before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+                ffmpeg_options = '-vn'
+
             # 创建音频源
-            audio_source = discord.FFmpegPCMAudio(playable_url)
+            audio_source = discord.FFmpegPCMAudio(
+                playable_url,
+                before_options=before_options,
+                options=ffmpeg_options
+            )
 
             # 播放完成事件
             playback_finished = asyncio.Event()

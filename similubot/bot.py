@@ -67,6 +67,10 @@ class SimiluBot:
         # 存储对自身的引用，供事件处理器使用
         self.bot._similu_bot = self
 
+        # 一次性初始化标志：on_ready 在断线重连（重新 IDENTIFY）后会再次触发，
+        # 命令注册/同步等初始化只允许执行一次，否则重复注册同名命令会抛异常
+        self._startup_initialized = False
+
         # Register dependencies and initialize core components
         self._register_dependencies()
         self._init_core_modules()
@@ -206,6 +210,21 @@ class SimiluBot:
         """机器人就绪时的初始化任务"""
         try:
             self.logger.info(f"🤖 机器人已就绪: {self.bot.user}")
+
+            if self._startup_initialized:
+                # 重连就绪：跳过一次性初始化，避免重复注册命令/重复同步
+                self.logger.debug("检测到重连就绪，跳过重复初始化")
+                return
+            self._startup_initialized = True
+
+            # 清理上次运行遗留的临时音频文件（异常退出时播放完成清理不会执行）
+            try:
+                cleanup_results = self.playback_engine.audio_provider_factory.cleanup_temp_files(max_age_hours=0)
+                total_cleaned = sum(v for v in cleanup_results.values() if isinstance(v, int))
+                if total_cleaned:
+                    self.logger.info(f"🧹 清理上次遗留的临时文件: {total_cleaned} 个")
+            except Exception as e:
+                self.logger.warning(f"清理遗留临时文件失败: {e}")
 
             # 初始化 Slash Commands
             await self._init_slash_commands()

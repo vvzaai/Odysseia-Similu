@@ -33,6 +33,9 @@ class BilibiliProvider(BaseAudioProvider):
     支持标准的 BV 号和 AV 号格式的 Bilibili 视频链接。
     """
     
+    # 临时文件名前缀（用于过期文件自动清理）
+    TEMP_FILE_PREFIX = "bilibili_"
+    
     # Bilibili URL 匹配模式
     BILIBILI_URL_PATTERNS = [
         r'https?://(?:www\.)?bilibili\.com/video/(BV[a-zA-Z0-9]{10})',

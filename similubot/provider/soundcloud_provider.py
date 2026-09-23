@@ -33,6 +33,9 @@ class SoundCloudProvider(BaseAudioProvider):
     支持解析常见的 SoundCloud 曲目链接与短链，能够提取基础信息并下载为 MP3 文件。
     """
 
+    # 临时文件名前缀（用于过期文件自动清理）
+    TEMP_FILE_PREFIX = "soundcloud_"
+
     # 常规曲目链接模式，例如 https://soundcloud.com/artist/track-name
     TRACK_URL_PATTERN = re.compile(
         r"^https?://(?:m\.)?soundcloud\.com/[^/]+/[^/?#]+",

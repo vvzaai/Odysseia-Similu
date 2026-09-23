@@ -127,6 +127,13 @@ class BaseSlashCommand(ABC):
                 await interaction.followup.send(embed=embed, ephemeral=ephemeral)
             else:
                 await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+        except discord.NotFound:
+            # 初始响应窗口（3秒）已过，但 interaction token 15 分钟内仍有效，
+            # 走 followup webhook 兜底，避免错误信息静默丢失
+            try:
+                await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+            except Exception as fallback_error:
+                self.logger.error(f"发送错误响应兜底失败: {fallback_error}")
         except Exception as e:
             self.logger.error(f"发送错误响应失败: {e}")
 

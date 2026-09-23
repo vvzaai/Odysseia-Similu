@@ -35,6 +35,9 @@ class NetEaseProvider(BaseAudioProvider):
     4. 下载音频文件
     """
     
+    # 临时文件名前缀（用于过期文件自动清理）
+    TEMP_FILE_PREFIX = "netease_"
+    
     def __init__(self, temp_dir: str = "./temp", config: Optional[ConfigManager] = None):
         """
         初始化网易云音乐提供者

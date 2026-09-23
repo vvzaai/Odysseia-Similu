@@ -84,6 +84,11 @@ class MusicSearchCommands(BaseSlashCommand):
 
             self.logger.debug(f"处理点歌请求 - 用户: {interaction.user.display_name}, 查询: {query}")
 
+            # 立即 defer，占用 interaction token（15分钟有效）。
+            # 语音握手等耗时操作可能超过 Discord 3 秒初始响应窗口，
+            # 不 defer 会导致后续响应抛 404，用户看到"应用未响应"但 bot 已进频道
+            await interaction.response.defer(ephemeral=True)
+
             # 连接到用户的语音频道
             success, error = await self.music_player.connect_to_user_channel(interaction.user)
             if not success:
@@ -128,7 +133,8 @@ class MusicSearchCommands(BaseSlashCommand):
                 description=f"正在处理 {source_name} 链接...",
                 color=discord.Color.blue()
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            # handle_song_request 已 defer，此处走 followup
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
             # 创建进度更新器
             progress_updater = DiscordProgressUpdater(interaction)
@@ -174,12 +180,13 @@ class MusicSearchCommands(BaseSlashCommand):
             self.logger.debug(f"NetEase搜索: {query}")
 
             # 发送搜索中的消息（ephemeral）
+            # handle_song_request 已 defer，此处走 followup
             embed = discord.Embed(
                 title="🔍 搜索中...",
                 description=f"正在网易云音乐中搜索: **{query}**",
                 color=discord.Color.blue()
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
             # 执行搜索
             search_results = await search_songs(query, limit=5)

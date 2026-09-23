@@ -6,11 +6,33 @@ Odysseia-Similu 音乐机器人 - 专为类脑/Odysseia Discord 社区打造的�
 主程序入口点，负责配置加载、机器人初始化和优雅的启动/关闭处理。
 支持 YouTube 视频和 Catbox 音频文件播放，提供完整的音乐队列管理功能。
 """
+import asyncio
 import logging
 
 from similubot.bot import SimiluBot
 from similubot.utils.config_manager import ConfigManager
 from similubot.utils.logger import setup_logger
+
+
+async def _run_bot(config: ConfigManager, logger: logging.Logger, discord_token: str) -> None:
+    """
+    在异步上下文中运行机器人，确保任何退出路径都执行资源清理。
+
+    直接调用 SimiluBot.run()（内部为阻塞式 bot.run()）会导致
+    SimiluBot.close() 中的临时文件清理、语音连接释放等逻辑永远不会执行。
+    """
+    # 初始化机器人（在事件循环内创建，确保 asyncio 原语绑定正确的 loop）
+    logger.info("正在初始化音乐机器人...")
+    bot = SimiluBot(config)
+    logger.info("✅ 音乐机器人初始化成功")
+
+    # 记录机器人配置摘要
+    _log_bot_configuration(logger, config, bot)
+
+    try:
+        await bot.start(discord_token)
+    finally:
+        await bot.close()
 
 def main() -> int:
     """
@@ -55,18 +77,10 @@ def main() -> int:
             logger.error("示例: discord.token: '你的_实际_机器人_令牌'")
             return 1
 
-        # 初始化机器人
-        logger.info("正在初始化音乐机器人...")
-        bot = SimiluBot(config)
-        logger.info("✅ 音乐机器人初始化成功")
-
-        # 记录机器人配置摘要
-        _log_bot_configuration(logger, config, bot)
-
-        # 运行机器人
+        # 初始化并运行机器人（异步上下文中运行，保证退出时执行 close() 清理资源）
         logger.info("🚀 启动音乐机器人...")
         logger.info("按 Ctrl+C 停止机器人")
-        bot.run(discord_token)
+        asyncio.run(_run_bot(config, logger, discord_token))
 
     except KeyboardInterrupt:
         logger.info("🛑 用户停止了机器人 (Ctrl+C)")

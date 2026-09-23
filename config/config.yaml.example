@@ -43,12 +43,6 @@ music:
     min_voters: 2  # 最小投票人数要求（防止单人频道滥用）
                    # 当语音频道人数少于此值时，允许直接跳过
 
-# 播放事件配置
-playback:
-  notify_absent_users: true  # 是否向缺席用户发送"轮到你的歌了"提醒通知
-                            # 设置为 false 可禁用对不在语音频道的用户的提前通知
-                            # 默认: true（启用通知）
-
   # YouTube PoToken 配置（绕过机器人检测）
   youtube:
     # 自动机器人检测处理
@@ -76,6 +70,12 @@ playback:
       # 3. 提示手动输入 PoToken
       use_web_client: true  # 尝试 WEB 客户端作为第一备用方案
       prompt_for_manual_potoken: false  # 提示手动 PoToken 作为最后手段（不推荐用于机器人）
+
+# 播放事件配置
+playback:
+  notify_absent_users: true  # 是否向缺席用户发送"轮到你的歌了"提醒通知
+                            # 设置为 false 可禁用对不在语音频道的用户的提前通知
+                            # 默认: true（启用通知）
 
 # 重复检测和队列公平性配置
 duplicate_detection:
