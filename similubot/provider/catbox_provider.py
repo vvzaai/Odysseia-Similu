@@ -7,6 +7,7 @@ Catbox 音频提供者 - 处理 Catbox 音频文件的验证和信息提取
 import os
 import re
 import asyncio
+import json
 import aiohttp
 from typing import Optional, Tuple
 from urllib.parse import urlparse
@@ -107,6 +108,50 @@ class CatboxProvider(BaseAudioProvider):
             self.logger.error(f"获取Catbox文件信息失败: {e}")
             return None, None
     
+    async def _get_duration_with_ffprobe(self, url: str) -> Optional[float]:
+        """
+        使用 ffprobe 探测 URL 的真实音频时长
+
+        基于文件大小的估算对非平均码率的文件（如 320kbps mp3、VBR）偏差可达数倍，
+        ffprobe 直接读取容器元数据获得精确值。失败时返回 None，由调用方回退估算。
+        """
+        command = [
+            'ffprobe',
+            '-v', 'quiet',
+            '-print_format', 'json',
+            '-show_format',
+            url
+        ]
+        process = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=15)
+
+            if process.returncode != 0:
+                self.logger.error(f"ffprobe 执行失败: {stderr.decode().strip()}")
+                return None
+
+            metadata = json.loads(stdout)
+            return float(metadata['format']['duration'])
+
+        except asyncio.TimeoutError:
+            if process and process.returncode is None:
+                process.kill()
+                await process.wait()
+            self.logger.warning("ffprobe 获取 Catbox 音频时长超时")
+            return None
+        except FileNotFoundError:
+            self.logger.error("ffprobe 未安装或不在系统 PATH 中，无法获取精确音频时长")
+            return None
+        except Exception as e:
+            self.logger.error(f"使用 ffprobe 获取时长时发生未知错误: {e}")
+            return None
+
     async def _extract_audio_info_impl(self, url: str) -> Optional[AudioInfo]:
         """
         提取Catbox音频文件的信息
@@ -118,7 +163,10 @@ class CatboxProvider(BaseAudioProvider):
             音频信息，失败时返回None
         """
         try:
-            # 验证URL可访问性
+            # 优先用 ffprobe 获取精确时长
+            exact_duration = await self._get_duration_with_ffprobe(url)
+
+            # 获取文件头信息（文件大小 + 可访问性验证）
             file_size, content_type = await self._get_file_info_from_headers(url)
             
             if file_size is None:
@@ -130,13 +178,16 @@ class CatboxProvider(BaseAudioProvider):
             title = self._extract_title_from_filename(filename)
             file_extension = filename.split('.')[-1].lower()
             
-            # 估算音频时长（基于文件大小的粗略估算）
-            # 这是一个近似值，实际时长可能不同
-            estimated_duration = self._estimate_duration_from_size(file_size, file_extension)
+            # 精确时长优先，失败回退到大小估算
+            if exact_duration is not None:
+                duration = int(exact_duration)
+            else:
+                self.logger.warning(f"ffprobe 不可用，回退到大小估算，歌曲 '{title}' 的时长可能不准确")
+                duration = self._estimate_duration_from_size(file_size, file_extension)
             
             return AudioInfo(
                 title=title,
-                duration=estimated_duration,
+                duration=duration,
                 url=url,
                 uploader="Catbox",
                 file_path=url,  # Catbox文件直接使用URL作为文件路径

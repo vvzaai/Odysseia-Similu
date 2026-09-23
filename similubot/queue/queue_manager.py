@@ -806,8 +806,15 @@ class QueueManager(IQueueManager):
             song: 若提供，仅当当前歌曲确实是该歌曲时才清除
         """
         async with self._lock:
-            if song is not None and self._current_song is not song:
-                return
+            if song is not None:
+                # 对象身份匹配；持久化恢复后同一首歌可能是不同实例，用 url+title 兑底
+                same_song = self._current_song is song or (
+                    self._current_song is not None
+                    and self._current_song.url == song.url
+                    and self._current_song.title == song.title
+                )
+                if not same_song:
+                    return
             if self._current_song:
                 self.logger.debug(f"清理未播放的当前歌曲状态: {self._current_song.title}")
                 self.notify_song_finished(self._current_song)

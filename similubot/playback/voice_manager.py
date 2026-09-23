@@ -34,6 +34,8 @@ class VoiceManager(IVoiceManager):
         
         # 语音连接缓存
         self._voice_clients: Dict[int, discord.VoiceClient] = {}
+        # 每个服务器最近成功连接的频道：语音连接死亡时用于自动重连
+        self._last_channels: Dict[int, discord.VoiceChannel] = {}
         
         self.logger.debug("语音管理器初始化完成")
     
@@ -79,19 +81,26 @@ class VoiceManager(IVoiceManager):
             
             # 检查是否已经连接到该服务器
             existing_client = self.get_voice_client(guild_id)
-            if existing_client:
+            if existing_client and existing_client.is_connected():
                 if existing_client.channel == channel:
+                    self._last_channels[guild_id] = channel
                     self.logger.debug(f"已连接到频道: {channel.name}")
                     return True, None
                 else:
                     # 移动到新频道
                     await existing_client.move_to(channel)
+                    self._last_channels[guild_id] = channel
                     self.logger.info(f"移动到频道: {channel.name}")
                     return True, None
+            elif existing_client:
+                # 缓存的连接已死亡（假连接），清理后重新连接
+                self.logger.warning(f"服务器 {guild_id} 存在已断开的语音连接，清理后重连")
+                self._voice_clients.pop(guild_id, None)
             
             # 连接到新频道
             voice_client = await channel.connect()
             self._voice_clients[guild_id] = voice_client
+            self._last_channels[guild_id] = channel
             
             self.logger.info(f"成功连接到语音频道: {channel.name} (服务器: {channel.guild.name})")
             return True, None
@@ -137,10 +146,12 @@ class VoiceManager(IVoiceManager):
                 await voice_client.disconnect()
                 if guild_id in self._voice_clients:
                     del self._voice_clients[guild_id]
+                self._last_channels.pop(guild_id, None)
                 
                 self.logger.info(f"已断开语音连接 - 服务器 {guild_id}")
                 return True
             else:
+                self._last_channels.pop(guild_id, None)
                 self.logger.debug(f"服务器 {guild_id} 没有语音连接")
                 return True
                 
@@ -167,13 +178,21 @@ class VoiceManager(IVoiceManager):
         """
         try:
             voice_client = self.get_voice_client(guild_id)
-            if not voice_client:
-                self.logger.error(f"服务器 {guild_id} 没有语音连接")
-                return False
-            
-            if not voice_client.is_connected():
-                self.logger.error(f"服务器 {guild_id} 语音连接已断开")
-                return False
+            if not voice_client or not voice_client.is_connected():
+                # 连接已死亡：尝试重连到最近频道（仅一次，失败则报错由上层重试）
+                last_channel = self._last_channels.get(guild_id)
+                if not last_channel:
+                    self.logger.error(f"服务器 {guild_id} 没有语音连接且无最近频道记录")
+                    return False
+                self.logger.warning(f"服务器 {guild_id} 语音连接已断开，自动重连到最近频道: {last_channel.name}")
+                reconnect_success, reconnect_error = await self.connect_to_channel(last_channel)
+                if not reconnect_success:
+                    self.logger.error(f"服务器 {guild_id} 语音重连失败: {reconnect_error}")
+                    return False
+                voice_client = self.get_voice_client(guild_id)
+                if not voice_client or not voice_client.is_connected():
+                    self.logger.error(f"服务器 {guild_id} 重连后连接仍不可用")
+                    return False
             
             # 停止当前播放（如果有）
             if voice_client.is_playing():

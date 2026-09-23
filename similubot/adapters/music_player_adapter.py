@@ -21,6 +21,7 @@ class AudioSourceType(Enum):
     CATBOX = "catbox"
     BILIBILI = "bilibili"
     SOUNDCLOUD = "soundcloud"
+    NETEASE = "netease"
 
 class MusicPlayerAdapter:
     """
@@ -191,6 +192,8 @@ class MusicPlayerAdapter:
             return AudioSourceType.BILIBILI
         elif provider_name == 'soundcloud':
             return AudioSourceType.SOUNDCLOUD
+        elif provider_name == 'netease':
+            return AudioSourceType.NETEASE
 
         return None
     

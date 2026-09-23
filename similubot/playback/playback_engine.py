@@ -62,7 +62,18 @@ class PlaybackEngine(IPlaybackEngine):
         # 播放状态跟踪
         self._playback_tasks: Dict[int, asyncio.Task] = {}
         self._current_audio_files: Dict[int, str] = {}
-        
+
+        # 播放控制标记（guild_id -> "skip"/"stop"）：区分主动控制与自然结束/播放出错。
+        # discord.py 的 stop() 与自然结束都会触发 after(error=None)，无标记无法区分，
+        # 而重试逻辑只在真正出错时才应触发
+        self._control_actions: Dict[int, str] = {}
+
+        # 自动断开任务跟踪（队列空闲超时后断开语音，music.auto_disconnect_timeout）
+        self._disconnect_tasks: Dict[int, asyncio.Task] = {}
+
+        # 播放失败重试退避（秒）：下载成功但 ffmpeg 播放失败时的重试间隔
+        self._play_retry_delays: Tuple[float, ...] = (1.0, 3.0)
+
         # 播放时间跟踪
         self._playback_start_times: Dict[int, float] = {}
         self._playback_paused_times: Dict[int, float] = {}
@@ -70,6 +81,14 @@ class PlaybackEngine(IPlaybackEngine):
 
         # 文本频道跟踪（用于发送通知消息）
         self._text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
+
+        # 事件处理器表（实例级——类属性的可变 dict 会被所有实例共享，属 bug）
+        self._event_handlers = {
+            "song_requester_absent_skip": [],  # 跳过点歌人不在语音频道的歌曲
+            "show_song_info": [],  # 歌曲信息
+            "your_song_notification": [],  # 要轮到你的歌了！
+            "song_added_notification": [],  # 歌曲添加到队列的公共通知
+        }
 
         self.logger.info("🎵 播放引擎初始化完成")
     
@@ -113,14 +132,7 @@ class PlaybackEngine(IPlaybackEngine):
         """
         return self._text_channels.get(guild_id)
 
-    # 事件处理器 (Dict [str, List[callable]])
-
-    _event_handlers = {
-        "song_requester_absent_skip": [], # 跳过点歌人不在语音频道的歌曲
-        "show_song_info": [], # 歌曲信息
-        "your_song_notification": [], # 要轮到你的歌了！
-        "song_added_notification": [], # 歌曲添加到队列的公共通知
-    }
+    # 事件处理器表在 __init__ 中实例化（见上）
     
     def add_event_handler(self, event_type: str, handler: callable) -> None:
         """
@@ -206,6 +218,9 @@ class PlaybackEngine(IPlaybackEngine):
         """
         try:
             guild_id = requester.guild.id
+
+            # 来点歌说明频道恢复活跃，取消队列空闲的自动断开倒计时
+            self._cancel_disconnect_task(guild_id)
             
             # 检查URL是否支持
             if not self.audio_provider_factory.is_supported_url(url):
@@ -266,6 +281,9 @@ class PlaybackEngine(IPlaybackEngine):
             if not current_song:
                 return False, None, "当前没有歌曲在播放"
 
+            # 标记为跳歌（区分主动控制与播放出错，重试逻辑不应对主动操作生效）
+            self._control_actions[guild_id] = "skip"
+
             # 停止当前播放 - 这会触发 after_playing 回调，playback loop 会自然地继续到下一首歌
             self.logger.debug(f"停止当前播放 - 服务器 {guild_id}")
             self.voice_manager.stop_audio(guild_id)
@@ -296,6 +314,9 @@ class PlaybackEngine(IPlaybackEngine):
         """
         try:
             queue_manager = self.get_queue_manager(guild_id)
+
+            # 标记为跳歌（跳转本质上是跳过当前歌曲，不应触发播放失败重试）
+            self._control_actions[guild_id] = "skip"
 
             # 停止当前播放 - 这会触发 after_playing 回调
             self.logger.debug(f"停止当前播放以跳转 - 服务器 {guild_id}")
@@ -332,6 +353,10 @@ class PlaybackEngine(IPlaybackEngine):
             (成功标志, 错误消息)
         """
         try:
+            # 标记为手动停止（重试逻辑不应对主动停止生效）
+            self._control_actions[guild_id] = "stop"
+            self._cancel_disconnect_task(guild_id)
+
             # 停止播放
             self.voice_manager.stop_audio(guild_id)
 
@@ -342,20 +367,26 @@ class PlaybackEngine(IPlaybackEngine):
             queue_manager = self.get_queue_manager(guild_id)
             cleared_count = await queue_manager.clear_queue()
 
-            # 清理播放任务
-            if guild_id in self._playback_tasks:
-                self._playback_tasks[guild_id].cancel()
-                del self._playback_tasks[guild_id]
+            # 清理播放任务（取消后等待其收尾，避免与循环的 finally 清理竞态）
+            task = self._playback_tasks.pop(guild_id, None)
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
             # 清理音频文件
             await self._cleanup_current_audio(guild_id)
 
+            self._control_actions.pop(guild_id, None)
             self.logger.info(f"停止播放 - 服务器 {guild_id}: 清空了 {cleared_count} 首歌曲")
             return True, None
 
         except Exception as e:
             error_msg = f"停止播放失败: {e}"
             self.logger.error(error_msg)
+            self._control_actions.pop(guild_id, None)
             return False, error_msg
     
     async def connect_to_user_channel(self, user: discord.Member) -> Tuple[bool, Optional[str]]:
@@ -368,31 +399,11 @@ class PlaybackEngine(IPlaybackEngine):
         Returns:
             (成功标志, 错误消息)
         """
-        return await self.voice_manager.connect_to_user_channel(user)
-    
-    def get_queue_info(self, guild_id: int) -> Dict[str, Any]:
-        """
-        获取队列信息
-        
-        Args:
-            guild_id: 服务器ID
-            
-        Returns:
-            队列信息字典
-        """
-        try:
-            queue_manager = self.get_queue_manager(guild_id)
-            # 由于接口限制，这里使用同步方法
-            # 在实际使用中可能需要异步版本
-            return asyncio.create_task(queue_manager.get_queue_info()).result()
-        except:
-            return {
-                'guild_id': guild_id,
-                'current_song': None,
-                'queue_length': 0,
-                'queue_songs': [],
-                'total_duration': 0
-            }
+        success, error = await self.voice_manager.connect_to_user_channel(user)
+        if success:
+            # 连接成功说明频道恢复活跃，取消自动断开倒计时
+            self._cancel_disconnect_task(user.guild.id)
+        return success, error
     
     def is_playing(self, guild_id: int) -> bool:
         """
@@ -494,7 +505,10 @@ class PlaybackEngine(IPlaybackEngine):
         """如果需要，开始播放下一首歌曲"""
         if guild_id in self._playback_tasks:
             return  # 已经有播放任务在运行
-        
+
+        # 新播放任务启动，取消空闲断开倒计时
+        self._cancel_disconnect_task(guild_id)
+
         # 创建播放任务
         task = asyncio.create_task(self._playback_loop(guild_id))
         self._playback_tasks[guild_id] = task
@@ -535,73 +549,78 @@ class PlaybackEngine(IPlaybackEngine):
                     await queue_manager.clear_current_song(song)
                     continue
 
-                # 下载音频文件
-                success, audio_info, error = await self.audio_provider_factory.download_audio(song.url)
-                if not success or not audio_info:
-                    self.logger.error(f"下载音频失败 - {song.title}: {error}")
-                    # 取歌时已设为当前歌曲并通知重复检测器，失败需成对清理，避免幽灵当前歌曲残留
-                    await queue_manager.clear_current_song(song)
-                    continue
+                # 下载并播放（下载成功后的播放失败会有限重试，内部统一清理状态与临时文件）
+                await self._play_song_with_retry(guild_id, song)
 
-                # 播放音频
-                if audio_info.file_path and os.path.exists(audio_info.file_path):
-                    await self._play_audio_file(guild_id, audio_info.file_path, song)
-                else:
-                    # 直接播放URL，需要处理网易云的规范化URL
-                    await self._play_audio_url(guild_id, song.url, song)
+                # 主动停止后退出循环
+                if self._control_actions.get(guild_id) == "stop":
+                    break
 
+        except asyncio.CancelledError:
+            self.logger.info(f"服务器 {guild_id} 播放循环被取消")
+            raise
         except Exception as e:
-            self.logger.error(f"播放循环出错 - 服务器 {guild_id}: {e}")
+            self.logger.error(f"播放循环出错 - 服务器 {guild_id}: {e}", exc_info=True)
         finally:
             # 清理播放任务
             if guild_id in self._playback_tasks:
                 del self._playback_tasks[guild_id]
+            self._control_actions.pop(guild_id, None)
+            # 队列播完但语音仍连接：启动空闲自动断开倒计时（来点歌会取消）
+            if self.voice_manager.is_connected(guild_id):
+                self._schedule_disconnect(guild_id)
     
-    async def _play_audio_file(self, guild_id: int, file_path: str, song: SongInfo) -> None:
-        """播放音频文件"""
+    async def _play_audio_file(self, guild_id: int, file_path: str, song: SongInfo) -> Tuple[bool, bool]:
+        """
+        播放本地音频文件。
+
+        Returns:
+            (播放是否完成, 失败时是否值得重试)
+        """
+        # 本地文件不需要重连参数，仅应用输出选项（如 -vn）
+        ffmpeg_options = self.config.get_ffmpeg_options() if self.config else '-vn'
+        audio_source = discord.FFmpegPCMAudio(file_path, options=ffmpeg_options)
+        return await self._play_audio_source(guild_id, audio_source, song)
+
+    async def _play_audio_source(self, guild_id: int, audio_source: discord.AudioSource, song: SongInfo) -> Tuple[bool, bool]:
+        """
+        播放已创建的音频源（统一核心，两个播放入口共享）。
+
+        结束语义判定：主动停止/跳歌（_control_actions）> 播放错误 > 自然完成。
+        discord.py 的 stop() 与自然结束都以 error=None 触发 after 回调，
+        必须靠显式控制标记区分，否则跳歌会被误判为播放失败。
+
+        Returns:
+            (播放是否完成, 失败时是否值得重试)
+        """
+        playback_finished = asyncio.Event()
+        playback_error: Dict[str, Optional[Exception]] = {"error": None}
+        loop = asyncio.get_running_loop()
+
+        def after_playing(error):
+            # 本回调由 Discord 音频播放线程触发；Event 只能在事件循环线程操作。
+            # 状态清理移到本方法的 finally（事件循环线程），回调只负责传递错误
+            def _finalize():
+                playback_error["error"] = error
+                playback_finished.set()
+            try:
+                loop.call_soon_threadsafe(_finalize)
+            except RuntimeError:
+                # 事件循环已关闭（机器人关闭中），直接在当前线程收尾
+                _finalize()
+
         try:
-            # 创建音频源（本地文件不需要重连参数，仅应用输出选项如 -vn）
-            ffmpeg_options = self.config.get_ffmpeg_options() if self.config else '-vn'
-            audio_source = discord.FFmpegPCMAudio(file_path, options=ffmpeg_options)
-
-            # 播放完成事件
-            playback_finished = asyncio.Event()
-            loop = asyncio.get_running_loop()
-
-            def after_playing(error):
-                # 本回调由 Discord 音频播放线程触发，asyncio.Event 等对象只能在
-                # 事件循环线程操作，须用 call_soon_threadsafe 调度回去，
-                # 否则可能无法唤醒等待中的播放循环协程
-                def _finalize():
-                    if error:
-                        self.logger.error(f"播放出错: {error}")
-                    # 通知队列管理器歌曲播放完成（用于重复检测）
-                    queue_manager = self.get_queue_manager(guild_id)
-                    queue_manager.notify_song_finished(song)
-                    # 清理播放时间跟踪
-                    self._cleanup_playback_tracking(guild_id)
-                    playback_finished.set()
-                try:
-                    loop.call_soon_threadsafe(_finalize)
-                except RuntimeError:
-                    # 事件循环已关闭（机器人关闭中），直接在当前线程收尾
-                    _finalize()
-
-            # 开始播放
-            success = await self.voice_manager.play_audio(guild_id, audio_source, after_playing)
-            if not success:
-                return
+            if not await self.voice_manager.play_audio(guild_id, audio_source, after_playing):
+                return False, True  # 播放启动失败（如语音连接中断），值得重试
 
             # 记录播放开始时间
             self._playback_start_times[guild_id] = time.time()
             self._total_paused_duration[guild_id] = 0.0
-            if guild_id in self._playback_paused_times:
-                del self._playback_paused_times[guild_id]
+            self._playback_paused_times.pop(guild_id, None)
 
             self.logger.info(f"正在播放: {song.title}")
 
-            # 触发歌曲信息显示事件（修复缺失的事件触发）
-            self.logger.debug(f"🎵 触发歌曲信息显示事件 - 服务器 {guild_id}, 歌曲: {song.title}")
+            # 触发歌曲信息显示事件
             text_channel_id = self.get_text_channel_id(guild_id)
             if text_channel_id:
                 asyncio.create_task(
@@ -616,21 +635,139 @@ class PlaybackEngine(IPlaybackEngine):
             # 等待播放完成
             await playback_finished.wait()
 
+            # 结束语义判定并消费控制标记（主动停止 > 主动跳歌 > 播放错误 > 自然完成）。
+            # 必须 pop 消费：检查后残留会污染下一首歌曲的播放
+            action = self._control_actions.pop(guild_id, None)
+            if action == "stop":
+                return False, False
+            if action == "skip":
+                return True, False  # 跳歌视为完成，不重试
+            # 播放出错：值得重试
+            if playback_error["error"] is not None:
+                self.logger.error(f"播放出错: {playback_error['error']}")
+                return False, True
+            # 自然完成
+            return True, False
+
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            self.logger.error(f"播放音频文件失败: {e}")
-            self._cleanup_playback_tracking(guild_id)
+            self.logger.error(f"播放音频失败: {e}", exc_info=True)
+            return False, True
         finally:
-            # 播放结束（完成/跳过/停止/异常）后删除本地音频文件，
-            # 避免 temp 目录无限增长。finally 也覆盖 task 被取消的路径
+            # 歌曲播放结束（完成/跳歌/出错）的统一收尾：释放重复检测跟踪、清理时间跟踪。
+            # 此处位于事件循环线程，替代原先在音频线程回调里做状态操作的做法
+            queue_manager = self.get_queue_manager(guild_id)
+            queue_manager.notify_song_finished(song)
+            self._cleanup_playback_tracking(guild_id)
+
+    async def _play_song_with_retry(self, guild_id: int, song: SongInfo) -> None:
+        """
+        下载并播放歌曲，播放失败时按指数退避有限重试。
+
+        失败分层处理（从根本上区分可自愈与不可自愈）：
+        - 流级断流：ffmpeg -reconnect 参数在传输层自愈，不进入重试
+        - 下载失败：不重试（源站 4xx/5xx 重试无意义，网络超时已由 aiohttp 超时控制）
+        - 播放启动/播放中出错：重试；URL 源每次重试重新解析直链，规避网易云链接过期
+        - 主动跳歌/停止：通过 _control_actions 标记识别，绝不触发重试
+        """
+        queue_manager = self.get_queue_manager(guild_id)
+        audio_path: Optional[str] = None
+
+        try:
+            # 下载（仅一次；Catbox 等流式源不下载，直接返回直链信息）
+            success, audio_info, error = await self.audio_provider_factory.download_audio(song.url)
+            if not success or not audio_info:
+                self.logger.error(f"下载音频失败 - {song.title}: {error}")
+                return
+
+            if audio_info.file_path and os.path.exists(audio_info.file_path):
+                audio_path = audio_info.file_path
+
+            attempts = len(self._play_retry_delays) + 1
+            for attempt in range(attempts):
+                # 主动控制检查（消费标记：跳歌/停止绝不重试）
+                action = self._control_actions.pop(guild_id, None)
+                if action == "stop":
+                    return
+                if action == "skip":
+                    self.logger.debug(f"歌曲被跳过，不重试 - {song.title}")
+                    return
+
+                if audio_path:
+                    played, retriable = await self._play_audio_file(guild_id, audio_path, song)
+                else:
+                    played, retriable = await self._play_audio_url(guild_id, song.url, song)
+
+                if played or not retriable:
+                    return
+
+                if attempt < attempts - 1:
+                    delay = self._play_retry_delays[attempt]
+                    self.logger.warning(
+                        f"播放失败，{delay:.0f} 秒后重试 - 服务器 {guild_id}: {song.title} "
+                        f"（第 {attempt + 1}/{attempts} 次）"
+                    )
+                    await asyncio.sleep(delay)
+
+            self.logger.error(f"播放多次失败，放弃当前歌曲 - 服务器 {guild_id}: {song.title}")
+
+        finally:
+            # 统一收尾：清理当前歌曲状态（含重复检测跟踪）与本次临时文件
             try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-                    self.logger.debug(f"播放结束，清理音频文件: {file_path}")
+                await queue_manager.clear_current_song(song)
             except Exception as e:
-                self.logger.warning(f"清理音频文件失败: {e}")
-            # 若映射中仍指向本次文件，一并清除，避免后续二次删除
-            if self._current_audio_files.get(guild_id) == file_path:
-                del self._current_audio_files[guild_id]
+                self.logger.warning(f"清理当前歌曲状态失败: {e}")
+            if audio_path:
+                self._current_audio_files[guild_id] = audio_path
+                await self._cleanup_current_audio(guild_id)
+
+    def _schedule_disconnect(self, guild_id: int) -> None:
+        """队列空闲后安排自动断开倒计时（music.auto_disconnect_timeout 的实际实现）"""
+        self._cancel_disconnect_task(guild_id)
+        timeout = self.config.get_music_auto_disconnect_timeout() if self.config else 300
+        if timeout <= 0:
+            return
+        self.logger.info(f"服务器 {guild_id} 队列已空，{timeout} 秒后自动断开语音")
+        task = asyncio.create_task(self._disconnect_after_timeout(guild_id, timeout))
+        self._disconnect_tasks[guild_id] = task
+        task.add_done_callback(lambda t: self._disconnect_tasks.pop(guild_id, None))
+
+    def _cancel_disconnect_task(self, guild_id: int) -> None:
+        """取消自动断开倒计时（来点歌/连接频道等活跃信号时调用）"""
+        task = self._disconnect_tasks.pop(guild_id, None)
+        if task and not task.done():
+            task.cancel()
+            self.logger.debug(f"服务器 {guild_id} 的自动断开倒计时已取消")
+
+    async def _disconnect_after_timeout(self, guild_id: int, timeout: int) -> None:
+        """倒计时结束后断开空闲语音连接（期间恢复活跃则不动作）"""
+        try:
+            await asyncio.sleep(timeout)
+            queue_manager = self.get_queue_manager(guild_id)
+            if (
+                self.voice_manager.is_connected(guild_id)
+                and queue_manager.get_queue_length() == 0
+                and not self.is_playing(guild_id)
+            ):
+                self.logger.info(f"服务器 {guild_id} 空闲超时，断开语音连接")
+                await self.voice_manager.disconnect_from_guild(guild_id)
+                # 告别消息
+                text_channel_id = self.get_text_channel_id(guild_id)
+                if text_channel_id:
+                    try:
+                        channel = self.bot.get_channel(text_channel_id) or await self.bot.fetch_channel(text_channel_id)
+                        if channel:
+                            await channel.send("🎵 队列已空，我先离开啦~ 下次见！")
+                    except (discord.NotFound, discord.Forbidden):
+                        self.logger.warning(f"无法在服务器 {guild_id} 的频道 {text_channel_id} 发送告别消息")
+            else:
+                self.logger.debug(f"服务器 {guild_id} 倒计时期间恢复活跃，取消断开")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self.logger.error(f"自动断开任务出错 - 服务器 {guild_id}: {e}", exc_info=True)
+
 
     async def _resolve_playable_url(self, url: str) -> Optional[str]:
         """
@@ -675,89 +812,36 @@ class PlaybackEngine(IPlaybackEngine):
             self.logger.error(f"解析播放URL时出错: {e}", exc_info=True)
             return None
 
-    async def _play_audio_url(self, guild_id: int, url: str, song: SongInfo) -> None:
-        """播放音频URL"""
-        try:
-            # 处理网易云的规范化URL，需要解析为可播放直链
-            playable_url = await self._resolve_playable_url(url)
-            if not playable_url:
-                self.logger.error(f"无法解析播放链接: {url}")
-                # 跳过这首歌，直接返回让播放循环继续到下一首
-                return
+    async def _play_audio_url(self, guild_id: int, url: str, song: SongInfo) -> Tuple[bool, bool]:
+        """
+        播放音频URL。
 
-            self.logger.debug(f"使用播放链接: {playable_url}")
+        网易云规范化URL每次播放前重新解析为直链（规避直链短时效过期）；
+        URL 流式播放应用 ffmpeg 重连参数，流级断流在传输层自愈。
 
-            # 创建音频源。URL 流式播放应用配置的重连参数（music.ffmpeg_options.before），
-            # 网络抖动时 ffmpeg 自动重连而非直接断流；本地文件路径不需要
-            if self.config:
-                before_options = self.config.get_ffmpeg_before_options()
-                ffmpeg_options = self.config.get_ffmpeg_options()
-            else:
-                before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
-                ffmpeg_options = '-vn'
+        Returns:
+            (播放是否完成, 失败时是否值得重试)
+        """
+        playable_url = await self._resolve_playable_url(url)
+        if not playable_url:
+            self.logger.error(f"无法解析播放链接: {url}")
+            return False, False  # 解析失败多为源站问题，重试无意义
 
-            # 创建音频源
-            audio_source = discord.FFmpegPCMAudio(
-                playable_url,
-                before_options=before_options,
-                options=ffmpeg_options
-            )
+        self.logger.debug(f"使用播放链接: {playable_url}")
 
-            # 播放完成事件
-            playback_finished = asyncio.Event()
-            loop = asyncio.get_running_loop()
+        if self.config:
+            before_options = self.config.get_ffmpeg_before_options()
+            ffmpeg_options = self.config.get_ffmpeg_options()
+        else:
+            before_options = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5'
+            ffmpeg_options = '-vn'
 
-            def after_playing(error):
-                # 本回调由 Discord 音频播放线程触发，asyncio.Event 等对象只能在
-                # 事件循环线程操作，须用 call_soon_threadsafe 调度回去，
-                # 否则可能无法唤醒等待中的播放循环协程
-                def _finalize():
-                    if error:
-                        self.logger.error(f"播放出错: {error}")
-                    # 通知队列管理器歌曲播放完成（用于重复检测）
-                    queue_manager = self.get_queue_manager(guild_id)
-                    queue_manager.notify_song_finished(song)
-                    # 清理播放时间跟踪
-                    self._cleanup_playback_tracking(guild_id)
-                    playback_finished.set()
-                try:
-                    loop.call_soon_threadsafe(_finalize)
-                except RuntimeError:
-                    # 事件循环已关闭（机器人关闭中），直接在当前线程收尾
-                    _finalize()
-
-            # 开始播放
-            success = await self.voice_manager.play_audio(guild_id, audio_source, after_playing)
-            if not success:
-                return
-
-            # 记录播放开始时间
-            self._playback_start_times[guild_id] = time.time()
-            self._total_paused_duration[guild_id] = 0.0
-            if guild_id in self._playback_paused_times:
-                del self._playback_paused_times[guild_id]
-
-            # 触发歌曲信息显示事件
-            self.logger.debug(f"🎵 触发歌曲信息显示事件 - 服务器 {guild_id}, 歌曲: {song.title}")
-            text_channel_id = self.get_text_channel_id(guild_id)
-            if text_channel_id:
-                asyncio.create_task(
-                    self._trigger_event("show_song_info", guild_id=guild_id, channel_id=text_channel_id, song=song)
-                )
-            else:
-                self.logger.warning(f"⚠️ 服务器 {guild_id} 没有设置文本频道，无法显示歌曲信息")
-
-            # 检查下一首歌曲的点歌人状态并发送通知（如果配置启用）
-            await self._check_and_notify_next_song(guild_id)
-
-            self.logger.info(f"正在播放: {song.title}")
-
-            # 等待播放完成
-            await playback_finished.wait()
-
-        except Exception as e:
-            self.logger.error(f"播放音频URL失败: {e}")
-            self._cleanup_playback_tracking(guild_id)
+        audio_source = discord.FFmpegPCMAudio(
+            playable_url,
+            before_options=before_options,
+            options=ffmpeg_options
+        )
+        return await self._play_audio_source(guild_id, audio_source, song)
     
     def _cleanup_playback_tracking(self, guild_id: int) -> None:
         """清理播放时间跟踪"""
