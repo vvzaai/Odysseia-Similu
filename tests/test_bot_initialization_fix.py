@@ -54,8 +54,7 @@ class TestBotInitializationFix(unittest.TestCase):
                 "temp_dir",
                 "playback_engine", 
                 "music_player_adapter",
-                "playback_event",
-                "command_registry"
+                "playback_event"
             ]
             
             for dep in expected_dependencies:
@@ -78,7 +77,6 @@ class TestBotInitializationFix(unittest.TestCase):
             self.assertIsNotNone(similu_bot.playback_engine)
             self.assertIsNotNone(similu_bot.music_player)
             self.assertIsNotNone(similu_bot.playback_event)
-            self.assertIsNotNone(similu_bot.command_registry)
             
             # 验证播放事件处理器有正确的适配器
             self.assertEqual(

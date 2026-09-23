@@ -94,6 +94,21 @@ class PlaybackControlCommands(BaseSlashCommand):
 
             self.logger.debug(f"当前歌曲: {current_song.title}")
 
+            # 校验发起者与 bot 处于同一语音频道（投票名单取自 bot 所在频道，
+            # 不校验会导致发起者无法投票、名单与实际听众不一致）
+            voice_client = interaction.guild.voice_client
+            user_voice = getattr(interaction.user, 'voice', None)
+            if (
+                not voice_client or not voice_client.channel
+                or not user_voice or user_voice.channel != voice_client.channel
+            ):
+                await self.send_error_response(
+                    interaction,
+                    "你需要和我在同一个语音频道才能发起跳过投票",
+                    ephemeral=True
+                )
+                return
+
             # 获取语音频道成员
             voice_members = self.vote_manager.get_voice_channel_members(
                 self._create_temp_context(interaction)
@@ -137,9 +152,15 @@ class PlaybackControlCommands(BaseSlashCommand):
                     # 投票通过，执行跳过
                     self.logger.info(f"投票通过，跳过歌曲: {current_song.title}")
                     await self._execute_skip(interaction.guild.id, current_song.title)
+                    await self._update_vote_result_message(
+                        interaction, "✅ 投票通过，已跳过当前歌曲", discord.Color.green()
+                    )
                 else:
                     # 投票失败或超时，继续播放
                     self.logger.info(f"投票未通过 ({result.value})，继续播放: {current_song.title}")
+                    await self._update_vote_result_message(
+                        interaction, "❎ 投票未通过，继续播放当前歌曲", discord.Color.orange()
+                    )
 
             # 启动投票
             result = await self.vote_manager.start_skip_vote(
@@ -149,13 +170,29 @@ class PlaybackControlCommands(BaseSlashCommand):
             )
 
             if result is None:
-                # 投票启动失败，回退到直接跳过
-                self.logger.warning("投票启动失败，回退到直接跳过")
-                await self._direct_skip_song(interaction, current_song)
+                # 投票启动失败（已有活跃投票/无法获取成员等）：
+                # 报错告知用户，绝不能绕过投票机制直接跳歌
+                self.logger.warning("投票启动失败")
+                await self._update_vote_result_message(
+                    interaction, "⚠️ 投票启动失败，请稍后重试", discord.Color.red()
+                )
 
         except Exception as e:
             self.logger.error(f"处理跳过命令失败: {e}", exc_info=True)
             await self.handle_command_error(interaction, e)
+
+    async def _update_vote_result_message(
+        self,
+        interaction: discord.Interaction,
+        text: str,
+        color: discord.Color
+    ) -> None:
+        """投票结束后更新初始响应消息（interaction token 15 分钟内有效，投票默认 60 秒超时）"""
+        try:
+            embed = discord.Embed(title="🗳️ 跳过投票", description=text, color=color)
+            await interaction.edit_original_response(embed=embed)
+        except Exception as e:
+            self.logger.debug(f"更新投票结果消息失败（token 可能已过期）: {e}")
 
     async def handle_show_progress(self, interaction: discord.Interaction) -> None:
         """

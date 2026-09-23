@@ -41,7 +41,24 @@ class CommandRegistry:
         # 命令组注册表
         self._command_groups: Dict[str, SlashCommandGroup] = {}
 
+        # 共享的歌曲历史数据库实例（惰性初始化）。
+        # 每次命令新建实例会导致 asyncio.Lock 不共享、数据库连接随 CWD 漂移
+        self._song_history_db = None
+
         self.logger.debug("命令注册器已初始化")
+
+    def _resolve_music_player(self):
+        """按类型从容器解析音乐播放器（取代按字典顺序取值的脆弱写法）"""
+        from similubot.adapters.music_player_adapter import MusicPlayerAdapter
+        return self.container.resolve(MusicPlayerAdapter)
+
+    async def _get_song_history_database(self):
+        """获取共享的歌曲历史数据库实例，首次使用时初始化表结构（幂等）"""
+        if self._song_history_db is None:
+            from ..card_draw.database import SongHistoryDatabase
+            self._song_history_db = SongHistoryDatabase()
+            await self._song_history_db.initialize()
+        return self._song_history_db
 
     def register_music_commands(self) -> None:
         """注册音乐相关的Slash命令"""
@@ -100,7 +117,7 @@ class CommandRegistry:
                 from similubot.utils.config_manager import ConfigManager
 
                 config = self.container.resolve(ConfigManager)
-                music_player = list(self.service_provider.container._singletons.values())[1]
+                music_player = self._resolve_music_player()
 
                 handler = MusicSearchCommands(config, music_player)
                 await handler.execute(interaction, query=query)
@@ -135,7 +152,7 @@ class CommandRegistry:
                 from similubot.utils.config_manager import ConfigManager
 
                 config = self.container.resolve(ConfigManager)
-                music_player = list(self.service_provider.container._singletons.values())[1]
+                music_player = self._resolve_music_player()
 
                 handler = QueueManagementCommands(config, music_player)
                 await handler.execute(interaction)
@@ -152,7 +169,7 @@ class CommandRegistry:
                 from similubot.utils.config_manager import ConfigManager
 
                 config = self.container.resolve(ConfigManager)
-                music_player = list(self.service_provider.container._singletons.values())[1]
+                music_player = self._resolve_music_player()
 
                 handler = QueueManagementCommands(config, music_player)
                 await handler.handle_user_queue_status(interaction)
@@ -171,7 +188,7 @@ class CommandRegistry:
                 from similubot.utils.config_manager import ConfigManager
 
                 config = self.container.resolve(ConfigManager)
-                music_player = list(self.service_provider.container._singletons.values())[1]
+                music_player = self._resolve_music_player()
 
                 handler = PlaybackControlCommands(config, music_player)
                 await handler.execute(interaction, action='skip')
@@ -188,7 +205,7 @@ class CommandRegistry:
                 from similubot.utils.config_manager import ConfigManager
 
                 config = self.container.resolve(ConfigManager)
-                music_player = list(self.service_provider.container._singletons.values())[1]
+                music_player = self._resolve_music_player()
 
                 handler = PlaybackControlCommands(config, music_player)
                 await handler.execute(interaction, action='progress')
@@ -260,15 +277,14 @@ class CommandRegistry:
             """随机抽卡命令处理器"""
             try:
                 from ..card_draw.card_draw_commands import CardDrawCommands
-                from ..card_draw.database import SongHistoryDatabase
                 from ..card_draw.random_selector import RandomSongSelector
                 from similubot.utils.config_manager import ConfigManager
 
                 config = self.container.resolve(ConfigManager)
-                music_player = list(self.service_provider.container._singletons.values())[1]
+                music_player = self._resolve_music_player()
 
-                # 初始化抽卡组件
-                database = SongHistoryDatabase()
+                # 使用共享数据库实例（每次新建会导致锁不共享、连接随 CWD 漂移）
+                database = await self._get_song_history_database()
                 selector = RandomSongSelector(database)
                 handler = CardDrawCommands(config, music_player, database, selector)
 
@@ -298,15 +314,14 @@ class CommandRegistry:
             """抽卡来源设置命令处理器"""
             try:
                 from ..card_draw.source_settings_commands import SourceSettingsCommands
-                from ..card_draw.database import SongHistoryDatabase
                 from ..card_draw.random_selector import RandomSongSelector
                 from similubot.utils.config_manager import ConfigManager
 
                 config = self.container.resolve(ConfigManager)
-                music_player = list(self.service_provider.container._singletons.values())[1]
+                music_player = self._resolve_music_player()
 
-                # 初始化设置组件
-                database = SongHistoryDatabase()
+                # 使用共享数据库实例（每次新建会导致锁不共享、连接随 CWD 漂移）
+                database = await self._get_song_history_database()
                 selector = RandomSongSelector(database)
                 handler = SourceSettingsCommands(config, music_player, database, selector)
 

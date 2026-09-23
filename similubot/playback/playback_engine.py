@@ -530,12 +530,17 @@ class PlaybackEngine(IPlaybackEngine):
                         )
                     else:
                         self.logger.warning(f"⚠️ 服务器 {guild_id} 没有设置文本频道，无法发送跳过通知")
+
+                    # 取歌时已设为当前歌曲并通知重复检测器，跳过需成对清理，避免状态残留
+                    await queue_manager.clear_current_song(song)
                     continue
 
                 # 下载音频文件
                 success, audio_info, error = await self.audio_provider_factory.download_audio(song.url)
                 if not success or not audio_info:
                     self.logger.error(f"下载音频失败 - {song.title}: {error}")
+                    # 取歌时已设为当前歌曲并通知重复检测器，失败需成对清理，避免幽灵当前歌曲残留
+                    await queue_manager.clear_current_song(song)
                     continue
 
                 # 播放音频
@@ -555,23 +560,32 @@ class PlaybackEngine(IPlaybackEngine):
     async def _play_audio_file(self, guild_id: int, file_path: str, song: SongInfo) -> None:
         """播放音频文件"""
         try:
-            # 创建音频源
             # 创建音频源（本地文件不需要重连参数，仅应用输出选项如 -vn）
             ffmpeg_options = self.config.get_ffmpeg_options() if self.config else '-vn'
             audio_source = discord.FFmpegPCMAudio(file_path, options=ffmpeg_options)
 
             # 播放完成事件
             playback_finished = asyncio.Event()
+            loop = asyncio.get_running_loop()
 
             def after_playing(error):
-                if error:
-                    self.logger.error(f"播放出错: {error}")
-                # 通知队列管理器歌曲播放完成（用于重复检测）
-                queue_manager = self.get_queue_manager(guild_id)
-                queue_manager.notify_song_finished(song)
-                # 清理播放时间跟踪
-                self._cleanup_playback_tracking(guild_id)
-                playback_finished.set()
+                # 本回调由 Discord 音频播放线程触发，asyncio.Event 等对象只能在
+                # 事件循环线程操作，须用 call_soon_threadsafe 调度回去，
+                # 否则可能无法唤醒等待中的播放循环协程
+                def _finalize():
+                    if error:
+                        self.logger.error(f"播放出错: {error}")
+                    # 通知队列管理器歌曲播放完成（用于重复检测）
+                    queue_manager = self.get_queue_manager(guild_id)
+                    queue_manager.notify_song_finished(song)
+                    # 清理播放时间跟踪
+                    self._cleanup_playback_tracking(guild_id)
+                    playback_finished.set()
+                try:
+                    loop.call_soon_threadsafe(_finalize)
+                except RuntimeError:
+                    # 事件循环已关闭（机器人关闭中），直接在当前线程收尾
+                    _finalize()
 
             # 开始播放
             success = await self.voice_manager.play_audio(guild_id, audio_source, after_playing)
@@ -691,16 +705,26 @@ class PlaybackEngine(IPlaybackEngine):
 
             # 播放完成事件
             playback_finished = asyncio.Event()
+            loop = asyncio.get_running_loop()
 
             def after_playing(error):
-                if error:
-                    self.logger.error(f"播放出错: {error}")
-                # 通知队列管理器歌曲播放完成（用于重复检测）
-                queue_manager = self.get_queue_manager(guild_id)
-                queue_manager.notify_song_finished(song)
-                # 清理播放时间跟踪
-                self._cleanup_playback_tracking(guild_id)
-                playback_finished.set()
+                # 本回调由 Discord 音频播放线程触发，asyncio.Event 等对象只能在
+                # 事件循环线程操作，须用 call_soon_threadsafe 调度回去，
+                # 否则可能无法唤醒等待中的播放循环协程
+                def _finalize():
+                    if error:
+                        self.logger.error(f"播放出错: {error}")
+                    # 通知队列管理器歌曲播放完成（用于重复检测）
+                    queue_manager = self.get_queue_manager(guild_id)
+                    queue_manager.notify_song_finished(song)
+                    # 清理播放时间跟踪
+                    self._cleanup_playback_tracking(guild_id)
+                    playback_finished.set()
+                try:
+                    loop.call_soon_threadsafe(_finalize)
+                except RuntimeError:
+                    # 事件循环已关闭（机器人关闭中），直接在当前线程收尾
+                    _finalize()
 
             # 开始播放
             success = await self.voice_manager.play_audio(guild_id, audio_source, after_playing)

@@ -795,6 +795,26 @@ class QueueManager(IQueueManager):
         self._duplicate_detector.notify_song_finished_playing(song.audio_info, song.requester)
         self.logger.debug(f"歌曲播放完成，更新跟踪状态: {song.title} - {song.requester.display_name}")
 
+    async def clear_current_song(self, song: Optional[SongInfo] = None) -> None:
+        """
+        清除当前歌曲状态（用于下载失败/点歌人缺席等未实际播放的中止路径）
+
+        取歌时（get_next_song）已将歌曲设为当前歌曲并通知重复检测器开始播放，
+        中止路径必须成对地通知结束并清除当前歌曲，否则状态残留。
+
+        Args:
+            song: 若提供，仅当当前歌曲确实是该歌曲时才清除
+        """
+        async with self._lock:
+            if song is not None and self._current_song is not song:
+                return
+            if self._current_song:
+                self.logger.debug(f"清理未播放的当前歌曲状态: {self._current_song.title}")
+                self.notify_song_finished(self._current_song)
+                self._current_song = None
+                self._current_position = 0.0
+                await self._save_state()
+
     def _remove_song_from_tracking(self, song: SongInfo) -> None:
         """
         从重复检测器中移除歌曲的辅助方法

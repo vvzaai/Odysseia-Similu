@@ -536,13 +536,17 @@ class BilibiliProvider(BaseAudioProvider):
         try:
             import aiohttp
 
+            # 下载超时：不限制总时长（大文件合法耗时较长），
+            # 但限制连接建立 10s、读流间隙 30s，避免连接挂死永久占用下载协程
+            timeout = aiohttp.ClientTimeout(total=None, connect=10, sock_read=30)
+
             # 设置请求头，模拟浏览器请求
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                 'Referer': 'https://www.bilibili.com/'
             }
 
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(stream_url, headers=headers) as response:
                     if response.status != 200:
                         self.logger.error(f"音频流请求失败，状态码: {response.status}")
