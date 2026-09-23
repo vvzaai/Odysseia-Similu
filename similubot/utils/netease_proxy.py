@@ -222,17 +222,23 @@ class NetEaseProxyManager:
             
             # 构建新的URL
             new_scheme = 'https' if self.should_use_https() else 'http'
-            new_netloc = target_domain
+            
+            # target_domain 可能带路径前缀（如 localhost:8080/netease_api），
+            # 必须拆分为 netloc 与路径前缀分别放入 urlunparse——
+            # 直接整体塞进 netloc 只能靠 urlunparse 的字符串拼接巧合得到正确结果
+            target_parts = target_domain.split('/', 1)
+            new_netloc = target_parts[0]
+            path_prefix = '/' + target_parts[1].strip('/') if len(target_parts) > 1 else ''
             
             # 保持原始端口号（如果有）
-            if ':' in original_domain and ':' not in target_domain:
+            if ':' in original_domain and ':' not in new_netloc:
                 port = original_domain.split(':')[1]
-                new_netloc = f"{target_domain}:{port}"
+                new_netloc = f"{new_netloc}:{port}"
             
             new_url = urlunparse((
                 new_scheme,
                 new_netloc,
-                parsed.path,
+                path_prefix + parsed.path,
                 parsed.params,
                 parsed.query,
                 parsed.fragment
