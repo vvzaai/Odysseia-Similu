@@ -688,10 +688,8 @@ class PlaybackEngine(IPlaybackEngine):
             self.logger.error(f"播放音频失败: {e}", exc_info=True)
             return False, True
         finally:
-            # 歌曲播放结束（完成/跳歌/出错）的统一收尾：释放重复检测跟踪、清理时间跟踪。
-            # 此处位于事件循环线程，替代原先在音频线程回调里做状态操作的做法
-            queue_manager = self.get_queue_manager(guild_id)
-            queue_manager.notify_song_finished(song)
+            # 时间跟踪收尾（事件循环线程）。重复检测/当前歌曲状态的清理由
+            # _play_song_with_retry 的 finally 统一负责，避免双重通知
             self._cleanup_playback_tracking(guild_id)
 
     async def _play_song_with_retry(self, guild_id: int, song: SongInfo) -> None:

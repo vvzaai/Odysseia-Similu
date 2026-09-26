@@ -11,6 +11,7 @@
 
 import logging
 import asyncio
+import json
 import aiohttp
 import os
 import re
@@ -471,6 +472,15 @@ class NetEaseProvider(BaseAudioProvider):
                 file_size = os.path.getsize(file_path)
                 if file_size > 0:
                     self.logger.debug(f"NetEase音频文件下载完成: {file_path}, 大小: {file_size} 字节")
+                    # 诊断：ffprobe 读实际音频时长。非会员版权歌只有约 30 秒试听片段、
+                    # 反代链路截断也会得到不完整的短文件——实测时长过短时提示排查
+                    actual_duration = await self._probe_file_duration(file_path)
+                    if actual_duration is not None:
+                        self.logger.info(f"下载文件实际时长: {actual_duration:.0f} 秒 - {file_path}")
+                        if actual_duration < 45:
+                            self.logger.warning(
+                                f"下载的音频仅 {actual_duration:.0f} 秒，可能是非会员试听片段（检查 MUSIC_U 是否过期）或下载不完整"
+                            )
                     return True
                 else:
                     self.logger.error(f"下载的文件为空: {file_path}")
@@ -489,6 +499,33 @@ class NetEaseProvider(BaseAudioProvider):
                 except:
                     pass
             return False
+
+    async def _probe_file_duration(self, file_path: str) -> Optional[float]:
+        """
+        用 ffprobe 读取下载文件的真实音频时长（诊断用）
+
+        文件不完整/试听片段时，容器元数据中的时长可能与实际可播放内容不符，
+        此处读取 format.duration 作为快速近似值；失败返回 None（不影响下载流程）。
+        """
+        process = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                'ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', file_path,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=15)
+            if process.returncode != 0:
+                return None
+            metadata = json.loads(stdout)
+            return float(metadata['format']['duration'])
+        except asyncio.TimeoutError:
+            if process and process.returncode is None:
+                process.kill()
+                await process.wait()
+            return None
+        except Exception:
+            return None
 
     async def is_member_required(self, url: str) -> bool:
         """

@@ -674,22 +674,26 @@ class MusicProgressUpdater:
                         self.logger.error(f"HTTP error updating progress: {e}")
                         break
 
-                # Update channel status
-                channel = message.channel
+                # Update voice channel status（频道状态仅语音/舞台频道支持；
+                # message.channel 是文本频道，对其设置 status 必报 50024，
+                # 应改为更新 bot 所在语音频道的状态）
+                voice_client = message.guild.voice_client if message.guild else None
+                voice_channel = voice_client.channel if voice_client else None
                 current_position = self.music_player.get_current_playback_position(guild_id)
-                if current_position is not None:
+                if voice_channel is not None and current_position is not None:
                     current_time = self.format_time(current_position)
                     song_length = self.format_time(song.duration)
                     try:
-                        await channel.edit(status=f"🎵 [{current_time}/{song_length}] {song.title}")
+                        await voice_channel.edit(status=f"🎵 [{current_time}/{song_length}] {song.title}")
                     except discord.HTTPException as e:
                         if e.status == 429:  # Rate limited
                             self.logger.warning(f"Rate limited, slowing down updates for guild {guild_id}")
                             await asyncio.sleep(10)  # Wait longer if rate limited
                         else:
-                            self.logger.error(f"HTTP error updating channel status: {e}")
+                            # 权限不足/频道类型不支持等：状态更新是锦上添花，降级为 DEBUG 不刷屏
+                            self.logger.debug(f"Channel status update skipped: {e}")
                     except Exception as e:
-                        self.logger.error(f"Error updating channel status: {e}")
+                        self.logger.debug(f"Channel status update skipped: {e}")
 
                 # Wait for next update
                 if interval is None:

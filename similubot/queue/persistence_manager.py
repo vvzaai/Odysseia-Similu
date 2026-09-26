@@ -145,7 +145,8 @@ class PersistenceManager(IPersistenceManager):
                 # 写入文件（原子写：先写同目录临时文件再替换，
                 # 避免进程在 json.dump 中途退出导致目标文件截断损坏）
                 file_path = self._get_queue_file_path(guild_id)
-                tmp_path = file_path + ".tmp"
+                # file_path 为 pathlib.Path，不支持 + str 拼接
+                tmp_path = file_path.with_name(file_path.name + ".tmp")
 
                 def write_file():
                     with open(tmp_path, 'w', encoding='utf-8') as f:
